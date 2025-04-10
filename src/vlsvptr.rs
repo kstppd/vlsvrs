@@ -1,28 +1,14 @@
 mod tracer_fields;
+mod tracer_particles;
 mod vlsv_reader;
+use crate::tracer_particles::tracer_particles::ParticlePopulation;
 use tracer_fields::vlsv_reader::VlsvStaticField;
 use tracer_fields::{
     vlsv_reader::{DipoleField, Field},
     *,
 };
+use tracer_particles::*;
 use vlsv_reader::vlsv_reader::VlsvFile;
-
-fn dump(fname: &String) -> Result<(), Box<dyn std::error::Error>> {
-    let f = VlsvFile::new(fname)?;
-    println!(
-        "File {} contains:",
-        std::path::Path::new(&f.filename)
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-    );
-    for v in f.data.iter() {
-        if v.1.arraysize.is_some() {}
-        println!("\t{}", &v.0);
-    }
-    Ok(())
-}
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let file = std::env::args()
@@ -32,14 +18,17 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
         .cloned()
         .expect("No file provided!");
 
-    // if dump(&file).is_err() {
-    //     return Err(std::process::ExitCode::FAILURE);
-    // }
-    // let fields = Vc::<f64>::new(moment);
     let fields = VlsvStaticField::<f32>::new(&file);
     println!(
         "{:?}",
         fields.get_fields_at(0.0, 6378137.0_f32 * 8_f32, 0.0, 0.0)
+    );
+    let p = ParticlePopulation::<f32>::new_with_energy_at_Lshell(
+        100,
+        1_f32,
+        2_f32,
+        1024_f32,
+        10_f32 * 6378137_f32,
     );
     Ok(std::process::ExitCode::SUCCESS)
 }
