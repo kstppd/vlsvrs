@@ -1,6 +1,6 @@
 pub mod vlsv_reader {
     use bytemuck::{Pod, cast_slice_mut};
-    use ndarray::{Array4, ShapeBuilder, s};
+    use ndarray::{Array4, IntoNdProducer, Order, Shape, ShapeBuilder, s};
     use num_traits;
     use serde::Deserialize;
     use serde_xml_rs::from_str;
@@ -10,9 +10,9 @@ pub mod vlsv_reader {
     #[derive(Deserialize, Debug, Clone)]
     #[serde(rename_all = "UPPERCASE")]
     #[allow(dead_code)]
-    struct Variable {
+    pub struct Variable {
         #[serde(rename = "arraysize")]
-        arraysize: Option<String>,
+        pub arraysize: Option<String>,
         #[serde(rename = "datasize")]
         datasize: Option<String>,
         #[serde(rename = "datatype")]
@@ -51,7 +51,7 @@ pub mod vlsv_reader {
     #[derive(Debug)]
     pub struct VlsvFile {
         pub filename: String,
-        data: HashMap<String, Variable>,
+        pub data: HashMap<String, Variable>,
     }
 
     impl VlsvFile {
@@ -198,29 +198,6 @@ pub mod vlsv_reader {
             nx *= usize::pow(2, max_amr);
             ny *= usize::pow(2, max_amr);
             nz *= usize::pow(2, max_amr);
-            let mut var: Vec<T> = Vec::with_capacity(nx * ny * nz * info.vectorsize);
-            unsafe {
-                var.set_len(nx * ny * nz * info.vectorsize);
-            }
-            self.read_variable_into::<T>(name, var.as_mut_slice());
-
-            fn fix<T: Sized + Pod + num_traits::identities::Zero>(src: &Vec<T>) -> Vec<T> {
-                let mut dst = src.clone();
-                let size = src.len() / 3;
-                for (i, chunk) in src.chunks_exact(3).enumerate() {
-                    dst[i] = chunk[0].clone();
-                    dst[size + i] = chunk[1].clone();
-                    dst[2 * size + i] = chunk[2].clone();
-                }
-                dst
-            }
-            //Shrink vector fields
-            if info.vectorsize == 3 {
-                var = fix(&var);
-                info.vectorsize = 1;
-            }
-            let bbox = [nx, ny, nz];
-            let mut ordered_var = Array4::<T>::zeros((nx, ny, nz, info.vectorsize));
 
             fn calc_local_start(global_cells: usize, ntasks: usize, my_n: usize) -> usize {
                 let n_per_task = global_cells / ntasks;
@@ -248,6 +225,10 @@ pub mod vlsv_reader {
                 "ERROR: fsgrid decomposition should have three elements, but is {:?}",
                 decomp
             );
+            let mut var = ndarray::Array2::<T>::zeros((nx * ny * nz, info.vectorsize));
+            self.read_variable_into::<T>(name, var.as_slice_mut().unwrap());
+            let bbox = [nx, ny, nz];
+            let mut ordered_var = Array4::<T>::zeros((nx, ny, nz, info.vectorsize));
 
             let mut current_offset = 0;
             for i in 0..ntasks as usize {
@@ -273,13 +254,17 @@ pub mod vlsv_reader {
                     task_start[2] + task_size[2],
                 ];
 
-                let total_size = task_size[0] * task_size[1] * task_size[2] * info.vectorsize;
-                let slice = &var[current_offset..current_offset + total_size];
-                let mask = ndarray::Array::from_shape_vec(
-                    (task_size[0], task_size[1], task_size[2], info.vectorsize).f(),
-                    slice.to_vec(),
-                )
-                .expect("Shape mismatch");
+                let total_size = task_size[0] * task_size[1] * task_size[2];
+                let _mask = var.slice(s![
+                    current_offset..current_offset + total_size,
+                    0..info.vectorsize
+                ]);
+                let mask = _mask
+                    .to_shape((
+                        (task_size[0], task_size[1], task_size[2], info.vectorsize),
+                        Order::F,
+                    ))
+                    .unwrap();
 
                 let mut subarray = ordered_var.slice_mut(s![
                     task_start[0]..task_end[0],

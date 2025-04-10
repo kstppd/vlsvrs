@@ -12,11 +12,11 @@ fn main() {
 
     let mut rho = VlsvFile::new(&file)
         .unwrap()
-        .read_fsgrid_variable::<f32>("fg_rhom")
+        .read_fsgrid_variable::<f32>("fg_e")
         .unwrap();
     println!("a={:?}", rho.dim());
     let max = rho.fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-    let min = rho.fold(f32::NEG_INFINITY, |a, &b| a.min(b));
+    let min = rho.fold(f32::INFINITY, |a, &b| a.min(b));
     let (mut rl, thread) = raylib::init()
         .size(2 * 640, 2 * 480)
         .title("Run Dashboard")
@@ -84,12 +84,13 @@ fn main() {
         let height = image.height();
         for y in 0..height {
             for x in 0..width {
-                let val = match mode {
+                let mut val = match mode {
                     0 => rho[(xcut, x as usize, y as usize, 0)],
                     1 => rho[(x as usize, ycut, y as usize, 0)],
                     2 => rho[(x as usize, y as usize, zcut, 0)],
                     _ => panic!(),
-                } / max;
+                };
+                val = (val - min) / (max - min);
                 image.draw_pixel(
                     x,
                     y,
