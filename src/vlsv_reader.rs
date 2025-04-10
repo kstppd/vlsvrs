@@ -170,14 +170,14 @@ pub mod vlsv_reader {
                 .unwrap();
         }
 
-        pub fn read_fsgrid_variable<T: Sized + Pod + num_traits::identities::Zero>(
+        pub fn read_fsgrid_variable<T: Sized + Pod + num_traits::identities::Zero + Send + Sync>(
             &self,
             name: &str,
         ) -> Option<Array4<T>> {
             if name[0..3] != *"fg_" {
                 panic!("ERROR: Variable {} is not an fs_grid variable!", name);
             }
-            let info = self.get_data_info(name)?;
+            let mut info = self.get_data_info(name)?;
             let mut decomp: [u32; 3] = [0; 3];
             self.read_variable_into::<u32>("decomposition", decomp.as_mut_slice());
             let decomp = decomp.iter().map(|x| *x as usize).collect::<Vec<usize>>();
@@ -203,6 +203,22 @@ pub mod vlsv_reader {
                 var.set_len(nx * ny * nz * info.vectorsize);
             }
             self.read_variable_into::<T>(name, var.as_mut_slice());
+
+            fn fix<T: Sized + Pod + num_traits::identities::Zero>(src: &Vec<T>) -> Vec<T> {
+                let mut dst = src.clone();
+                let size = src.len() / 3;
+                for (i, chunk) in src.chunks_exact(3).enumerate() {
+                    dst[i] = chunk[0].clone();
+                    dst[size + i] = chunk[1].clone();
+                    dst[2 * size + i] = chunk[2].clone();
+                }
+                dst
+            }
+            //Shrink vector fields
+            if info.vectorsize == 3 {
+                var = fix(&var);
+                info.vectorsize = 1;
+            }
             let bbox = [nx, ny, nz];
             let mut ordered_var = Array4::<T>::zeros((nx, ny, nz, info.vectorsize));
 

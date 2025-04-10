@@ -16,6 +16,7 @@ fn main() {
         .unwrap();
     println!("a={:?}", rho.dim());
     let max = rho.fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+    let min = rho.fold(f32::NEG_INFINITY, |a, &b| a.min(b));
     let (mut rl, thread) = raylib::init()
         .size(2 * 640, 2 * 480)
         .title("Run Dashboard")
