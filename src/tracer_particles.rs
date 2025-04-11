@@ -1,5 +1,6 @@
 pub mod tracer_particles {
     use crate::constants::physical_constants;
+    use crate::tracer_fields;
     use crate::tracer_fields::vlsv_reader::PtrTrait;
     use bytemuck::Pod;
     use num_traits::Float;
@@ -9,6 +10,7 @@ pub mod tracer_particles {
     use rayon::prelude::*;
     use std::f64::consts::PI;
     use std::io::Write;
+    use tracer_fields::vlsv_reader::{DipoleField, Field};
 
     pub fn mag<T>(x: T, y: T, z: T) -> T
     where
@@ -22,6 +24,10 @@ pub mod tracer_particles {
         T: PtrTrait,
     {
         x * x + y * y + z * z
+    }
+
+    fn dot<T: PtrTrait>(a: &[T; 3], b: &[T; 3]) -> T {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
     }
 
     pub fn gamma<T>(vx: T, vy: T, vz: T) -> T
@@ -249,7 +255,7 @@ pub mod tracer_particles {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct Particle<T: PtrTrait> {
         pub x: T,
         pub y: T,
@@ -270,6 +276,133 @@ pub mod tracer_particles {
                 vy,
                 vz,
                 alive,
+            }
+        }
+    }
+    pub fn boris<T: PtrTrait>(p: &mut Particle<T>, e: &[T], b: &[T], dt: T, m: T, c: T) {
+        // println!("b={:?},e={:?}", b, e);
+        // panic!();
+        let mut v_minus: [T; 3] = [T::zero(); 3];
+        let mut v_prime: [T; 3] = [T::zero(); 3];
+        let mut v_plus: [T; 3] = [T::zero(); 3];
+        let mut t: [T; 3] = [T::zero(); 3];
+        let mut s: [T; 3] = [T::zero(); 3];
+        let g = gamma(p.vx, p.vy, p.vz);
+        let cm = c / m;
+        t[0] = cm * b[0] * T::from(0.5).unwrap() * dt / g;
+        t[1] = cm * b[1] * T::from(0.5).unwrap() * dt / g;
+        t[2] = cm * b[2] * T::from(0.5).unwrap() * dt / g;
+
+        let t_mag2 = t[0].powi(2) + t[1].powi(2) + t[2].powi(2);
+
+        s[0] = T::from(2.0).unwrap() * t[0] / (T::one() + t_mag2);
+        s[1] = T::from(2.0).unwrap() * t[1] / (T::one() + t_mag2);
+        s[2] = T::from(2.0).unwrap() * t[2] / (T::one() + t_mag2);
+
+        v_minus[0] = p.vx + cm * e[0] * T::from(0.5).unwrap() * dt;
+        v_minus[1] = p.vy + cm * e[1] * T::from(0.5).unwrap() * dt;
+        v_minus[2] = p.vz + cm * e[2] * T::from(0.5).unwrap() * dt;
+
+        v_prime[0] = v_minus[0] + v_minus[1] * t[2] - v_minus[2] * t[1];
+        v_prime[1] = v_minus[1] - v_minus[0] * t[2] + v_minus[2] * t[0];
+        v_prime[2] = v_minus[2] + v_minus[0] * t[1] - v_minus[1] * t[0];
+
+        v_plus[0] = v_minus[0] + v_prime[1] * s[2] - v_prime[2] * s[1];
+        v_plus[1] = v_minus[1] - v_prime[0] * s[2] + v_prime[2] * s[0];
+        v_plus[2] = v_minus[2] + v_prime[0] * s[1] - v_prime[1] * s[0];
+
+        p.vx = v_plus[0] + cm * e[0] * T::from(0.5).unwrap() * dt;
+        p.vy = v_plus[1] + cm * e[1] * T::from(0.5).unwrap() * dt;
+        p.vz = v_plus[2] + cm * e[2] * T::from(0.5).unwrap() * dt;
+
+        p.x = p.x + p.vx * dt;
+        p.y = p.y + p.vy * dt;
+        p.z = p.z + p.vz * dt;
+    }
+
+    pub fn larmor_radius<T: PtrTrait>(particle: &Particle<T>, b: &[T; 3], mass: T, charge: T) -> T {
+        let b_mag = mag(b[0], b[1], b[2]);
+        let v = [particle.vx, particle.vy, particle.vz];
+        let dot_vb = dot(&v, b);
+        let v_parallel_mag = dot_vb / b_mag;
+        let b_unit = [b[0] / b_mag, b[1] / b_mag, b[2] / b_mag];
+        let v_parallel = [
+            b_unit[0] * v_parallel_mag,
+            b_unit[1] * v_parallel_mag,
+            b_unit[2] * v_parallel_mag,
+        ];
+
+        let v_perp = [
+            v[0] - v_parallel[0],
+            v[1] - v_parallel[1],
+            v[2] - v_parallel[2],
+        ];
+        let v_perp_mag = mag(v_perp[0], v_perp[1], v_perp[2]);
+        let numerator = mass * v_perp_mag;
+        let denominator = charge.abs() * b_mag;
+        numerator / denominator
+    }
+    pub fn borris_adaptive<T: PtrTrait, F: Field<T> + std::marker::Sync>(
+        p: &mut Particle<T>,
+        f: &F,
+        dt: &mut T,
+        t0: T,
+        t1: T,
+        mass: T,
+        charge: T,
+    ) {
+        let mut t = t0;
+        while t < t1 {
+            //Do not go over t1
+            if t + *dt > t1 {
+                *dt = t1 - t;
+            }
+
+            let mut p1 = p.clone();
+            let mut p2 = p.clone();
+            //1st order step
+            let fields = f.get_fields_at(t, p.x, p.y, p.z).unwrap();
+            boris(&mut p1, &fields[3..6], &fields[0..3], *dt, mass, charge);
+
+            let fields = f.get_fields_at(t, p.x, p.y, p.z).unwrap();
+            boris(
+                &mut p2,
+                &fields[3..6],
+                &fields[0..3],
+                *dt / T::from(2).unwrap(),
+                mass,
+                charge,
+            );
+
+            //Get error
+            let error = [
+                T::from(100.0).unwrap() * (p2.x - p1.x).abs(),
+                T::from(100.0).unwrap() * (p2.y - p1.y).abs(),
+                T::from(100.0).unwrap() * (p2.z - p1.z).abs(),
+            ]
+            .iter()
+            .copied()
+            .fold(T::neg_infinity(), T::max);
+
+            //Calc new dt
+            let b = [fields[0], fields[1], fields[2]];
+            let larmor = larmor_radius(p, &b, mass, charge);
+            let tol = T::from(larmor / T::from(100).unwrap()).unwrap();
+            let new_dt = T::from(0.9).unwrap()
+                * *dt
+                * T::min(
+                    T::max(
+                        (tol / (T::from(2.0).unwrap() * error)).sqrt(),
+                        T::from(0.3).unwrap(),
+                    ),
+                    T::from(2.0).unwrap(),
+                );
+
+            //Accept step
+            if error < tol {
+                *p = p1;
+                t = t + new_dt;
+                *dt = new_dt;
             }
         }
     }
