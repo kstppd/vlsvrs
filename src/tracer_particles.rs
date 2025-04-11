@@ -1,28 +1,30 @@
 pub mod tracer_particles {
+    use crate::constants::physical_constants;
     use bytemuck::Pod;
     use num_traits::Float;
     use rand::Rng;
     use rand::thread_rng;
     use rand_distr::{Distribution, Normal};
     use std::f64::consts::PI;
+    use std::io::Write;
 
     pub fn mag<T>(x: T, y: T, z: T) -> T
     where
-        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug,
+        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes,
     {
         T::sqrt(x * x + y * y + z * z)
     }
 
     pub fn mag2<T>(x: T, y: T, z: T) -> T
     where
-        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug,
+        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes,
     {
         x * x + y * y + z * z
     }
 
     pub fn gamma<T>(vx: T, vy: T, vz: T) -> T
     where
-        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug,
+        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes,
     {
         let term1: T = T::one();
         let term2: T = T::sqrt(T::one() - (mag2(vx, vy, vz) / T::from(3.0e8 * 3.0e8).unwrap()));
@@ -30,7 +32,7 @@ pub mod tracer_particles {
     }
 
     pub struct ParticlePopulation<
-        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug,
+        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes,
     > {
         pub x: Vec<T>,
         pub y: Vec<T>,
@@ -43,7 +45,9 @@ pub mod tracer_particles {
         pub charge: T,
     }
 
-    impl<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug> ParticlePopulation<T> {
+    impl<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes>
+        ParticlePopulation<T>
+    {
         pub fn new(n: usize, mass: T, charge: T) -> Self {
             Self {
                 x: Vec::<T>::with_capacity(n),
@@ -56,6 +60,51 @@ pub mod tracer_particles {
                 mass,
                 charge,
             }
+        }
+
+        pub fn save(&self, filename: &str) {
+            let size = self.size();
+            let datasize = std::mem::size_of::<T>();
+            let cap = size * std::mem::size_of::<T>() * 6;
+            let mut data: Vec<u8> = Vec::with_capacity(cap);
+            let bytes: [u8; std::mem::size_of::<usize>()] = size.to_ne_bytes();
+            data.extend_from_slice(&bytes);
+            let bytes: [u8; std::mem::size_of::<usize>()] = datasize.to_ne_bytes();
+            data.extend_from_slice(&bytes);
+            //X
+            for i in 0..size {
+                let bytes = self.x[i].to_ne_bytes();
+                data.extend_from_slice(&bytes.as_ref());
+            }
+            //Y
+            for i in 0..size {
+                let bytes = self.y[i].to_ne_bytes();
+                data.extend_from_slice(&bytes.as_ref());
+            }
+            //Z
+            for i in 0..size {
+                let bytes = self.z[i].to_ne_bytes();
+                data.extend_from_slice(&bytes.as_ref());
+            }
+            //VX
+            for i in 0..size {
+                let bytes = self.vx[i].to_ne_bytes();
+                data.extend_from_slice(&bytes.as_ref());
+            }
+            //VY
+            for i in 0..size {
+                let bytes = self.vy[i].to_ne_bytes();
+                data.extend_from_slice(&bytes.as_ref());
+            }
+            //VZ
+            for i in 0..size {
+                let bytes = self.vz[i].to_ne_bytes();
+                data.extend_from_slice(&bytes.as_ref());
+            }
+            println!("\tWriting {}/{} bytes to {}", data.len(), cap + 8, filename);
+            let mut file = std::fs::File::create(filename).expect("Failed to create file");
+            file.write_all(&data)
+                .expect("Failed to write state file  to file!");
         }
 
         pub fn new_with_energy_at_Lshell(n: usize, mass: T, charge: T, kev: T, L: T) -> Self {
@@ -142,7 +191,9 @@ pub mod tracer_particles {
         }
     }
 
-    pub struct Particle<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug> {
+    pub struct Particle<
+        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes,
+    > {
         pub x: T,
         pub y: T,
         pub z: T,
@@ -152,7 +203,9 @@ pub mod tracer_particles {
         pub alive: bool,
     }
 
-    impl<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug> Particle<T> {
+    impl<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes>
+        Particle<T>
+    {
         pub fn new(x: T, y: T, z: T, vx: T, vy: T, vz: T, alive: bool) -> Self {
             Self {
                 x,
