@@ -6,12 +6,26 @@ pub mod vlsv_reader {
     use vlsv_reader::vlsv_reader::VlsvFile;
 
     pub trait PtrTrait:
-        Float + Pod + Send + Sync + Sized + std::fmt::Debug + num_traits::ToBytes
+        Float
+        + Pod
+        + Send
+        + Sync
+        + Sized
+        + std::fmt::Debug
+        + std::fmt::Display
+        + num_traits::ToBytes
     {
     }
 
     impl<T> PtrTrait for T where
-        T: Float + Pod + Send + Sync + Sized + std::fmt::Debug + num_traits::ToBytes
+        T: Float
+            + Pod
+            + Send
+            + Sync
+            + Sized
+            + std::fmt::Debug
+            + std::fmt::Display
+            + num_traits::ToBytes
     {
     }
 
@@ -141,27 +155,20 @@ pub mod vlsv_reader {
         }
     }
 
+    pub fn earth_dipole<T: PtrTrait>(x: T, y: T, z: T) -> [T; 6] {
+        let position_mag = (x * x + y * y + z * z).sqrt();
+        let m = T::from(-7800e+12).unwrap();
+        let mut b = [T::zero(), T::zero(), T::zero()];
+        b[0] = (T::from(3.0).unwrap() * m * x * z) / position_mag.powi(5);
+        b[1] = (T::from(3.0).unwrap() * m * y * z) / position_mag.powi(5);
+        b[2] = (m / position_mag.powi(3))
+            * ((T::from(3.0).unwrap() * z * z) / position_mag.powi(2) - T::one());
+        [b[0], b[1], b[2], T::zero(), T::zero(), T::zero()]
+    }
+
     impl<T: PtrTrait> Field<T> for DipoleField<T> {
         fn get_fields_at(&self, _time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
-            let moment = T::from(self.moment).unwrap();
-            let r: [T; 3] = [x, y, z];
-            let mut b: [T; 3] = [T::zero(); 3];
-            let mut q: [T; 3] = [T::zero(); 3];
-
-            q[0] = T::zero();
-            q[1] = T::zero();
-            q[2] = -T::one() * moment;
-
-            let r2 = r[0].powi(2) + r[1].powi(2) + r[2].powi(2);
-            let r5 = r2.powi(2) * r2.sqrt();
-            let rdotq = q[0] * r[0] + q[1] * r[1] + q[2] * r[2];
-
-            for component in 0..3 {
-                b[component] =
-                    (T::from(3.0).unwrap() * r[component] * rdotq - q[component] * r2) / r5;
-            }
-
-            Some([b[0], b[1], b[2], T::zero(), T::zero(), T::zero()])
+            return Some(earth_dipole::<T>(x, y, z));
         }
     }
 

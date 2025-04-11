@@ -10,6 +10,7 @@ num-traits = "0.2.19"
 rand = "0.9.0"
 rand_distr = "0.5.1"
 raylib = "5.5.1"
+rayon = "1.10.0"
 regex = "1.11.1"
 serde = { version = "1.0", features = ["derive"] }
 serde-xml-rs = "0.6"

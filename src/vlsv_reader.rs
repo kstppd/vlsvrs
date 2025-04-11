@@ -159,15 +159,33 @@ pub mod vlsv_reader {
                 .unwrap();
 
             if info.datasize != std::mem::size_of::<T>() {
-                panic!(
-                    "ERROR: datasize/datatype error. You asked for {} bytes but the vlsv file has {} bytes as datasize for dataset \"{name}\"",
-                    std::mem::size_of::<T>(),
-                    info.datasize,
-                    name = name,
-                );
+                eprintln!("Unsafe read assumiung file is f32 and T f64 ");
+                // panic!(
+                //     "ERROR: datasize/datatype error. You asked for {} bytes but the vlsv file has {} bytes as datasize for dataset \"{name}\"",
+                //     std::mem::size_of::<T>(),
+                //     info.datasize,
+                //     name = name,
+                // );
+                let size = dst.len();
+                let mut _dst: Vec<f32> = Vec::<f32>::with_capacity(size);
+                unsafe {
+                    _dst.set_len(size);
+                }
+                f.read_exact_at(cast_slice_mut(_dst.as_mut_slice()), info.offset as u64)
+                    .unwrap();
+                unsafe {
+                    for i in 0..size {
+                        let value = _dst[i];
+                        let valuef64 = value as f64;
+                        let bytes = valuef64.to_ne_bytes();
+                        let b = dst.as_mut_ptr().add(i);
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), b.cast(), 8);
+                    }
+                }
+            } else {
+                f.read_exact_at(cast_slice_mut(dst), info.offset as u64)
+                    .unwrap();
             }
-            f.read_exact_at(cast_slice_mut(dst), info.offset as u64)
-                .unwrap();
         }
 
         pub fn read_fsgrid_variable<T: Sized + Pod + num_traits::identities::Zero + Send + Sync>(

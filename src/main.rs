@@ -12,11 +12,11 @@ fn main() {
 
     let mut rho = VlsvFile::new(&file)
         .unwrap()
-        .read_fsgrid_variable::<f32>("fg_e")
+        .read_fsgrid_variable::<f64>("fg_rhom")
         .unwrap();
     println!("a={:?}", rho.dim());
-    let max = rho.fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-    let min = rho.fold(f32::INFINITY, |a, &b| a.min(b));
+    let max = rho.fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    let min = rho.fold(f64::INFINITY, |a, &b| a.min(b));
     let (mut rl, thread) = raylib::init()
         .size(2 * 640, 2 * 480)
         .title("Run Dashboard")

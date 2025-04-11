@@ -6,6 +6,7 @@ pub mod tracer_particles {
     use rand::Rng;
     use rand::thread_rng;
     use rand_distr::{Distribution, Normal};
+    use rayon::prelude::*;
     use std::f64::consts::PI;
     use std::io::Write;
 
@@ -44,6 +45,53 @@ pub mod tracer_particles {
         pub charge: T,
     }
 
+    pub struct ParticleView<'a, T: PtrTrait> {
+        pub x: &'a T,
+        pub y: &'a T,
+        pub z: &'a T,
+        pub vx: &'a T,
+        pub vy: &'a T,
+        pub vz: &'a T,
+        pub alive: &'a bool,
+    }
+
+    pub struct ParticleIter<'a, T: PtrTrait> {
+        population: &'a ParticlePopulation<T>,
+        index: usize,
+    }
+
+    impl<'a, T: PtrTrait> ParticleIter<'a, T> {
+        pub fn new(population: &'a ParticlePopulation<T>) -> Self {
+            ParticleIter {
+                population,
+                index: 0,
+            }
+        }
+    }
+
+    impl<'a, T: PtrTrait> Iterator for ParticleIter<'a, T> {
+        type Item = ParticleView<'a, T>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if self.index >= self.population.x.len() {
+                return None;
+            }
+
+            let i = self.index;
+            self.index += 1;
+
+            Some(ParticleView {
+                x: &self.population.x[i],
+                y: &self.population.y[i],
+                z: &self.population.z[i],
+                vx: &self.population.vx[i],
+                vy: &self.population.vy[i],
+                vz: &self.population.vz[i],
+                alive: &self.population.alive[i],
+            })
+        }
+    }
+
     impl<T: PtrTrait> ParticlePopulation<T> {
         pub fn new(n: usize, mass: T, charge: T) -> Self {
             Self {
@@ -56,6 +104,13 @@ pub mod tracer_particles {
                 alive: Vec::<bool>::with_capacity(n),
                 mass,
                 charge,
+            }
+        }
+
+        pub fn iter(&self) -> ParticleIter<'_, T> {
+            ParticleIter {
+                population: &self,
+                index: 0,
             }
         }
 
@@ -98,7 +153,12 @@ pub mod tracer_particles {
                 let bytes = self.vz[i].to_ne_bytes();
                 data.extend_from_slice(&bytes.as_ref());
             }
-            println!("\tWriting {}/{} bytes to {}", data.len(), cap + 8, filename);
+            println!(
+                "\tWriting {}/{} bytes to {}",
+                data.len(),
+                cap + 8 + 8,
+                filename
+            );
             let mut file = std::fs::File::create(filename).expect("Failed to create file");
             file.write_all(&data)
                 .expect("Failed to write state file  to file!");
@@ -118,8 +178,8 @@ pub mod tracer_particles {
             let pitch_angle_dist = Normal::new(90.0, 5.0).unwrap();
 
             for _ in 0..n {
-                let pitch_angle_deg =
-                    T::from(pitch_angle_dist.sample(&mut rng).clamp(0.0, 180.0)).unwrap();
+                let pitch_angle_deg = T::from(45.0).unwrap(); //
+                // T::from(pitch_angle_dist.sample(&mut rng).clamp(0.0, 180.0)).unwrap();
                 let pitch_angle_rad =
                     pitch_angle_deg * T::from(PI).unwrap() / T::from(180.0).unwrap();
 
@@ -127,14 +187,15 @@ pub mod tracer_particles {
                 let v_perp = v * pitch_angle_rad.sin();
 
                 // Random phase
-                let gyro_phase = T::from(rand::random::<f64>() * 2.0 * PI).unwrap();
+                let gyro_phase = T::zero() * T::from(rand::random::<f64>() * 2.0 * PI).unwrap();
                 let vx = v_perp * gyro_phase.cos();
                 let vy = v_perp * gyro_phase.sin();
                 let vz = v_par;
                 let theta = rand::thread_rng().gen_range(0.0..2.0 * PI);
-                let x = T::from(L.to_f64().unwrap() * theta.cos()).unwrap();
-                let y = T::from(L.to_f64().unwrap() * theta.sin()).unwrap();
-                let z = 0.0;
+                let x = L; //T::from(L.to_f64().unwrap() * theta.cos()).unwrap();
+                let y = T::zero();
+                // T::from(L.to_f64().unwrap() * theta.sin()).unwrap();
+                let z = T::zero();
 
                 pop.add_particle(
                     [
@@ -188,6 +249,7 @@ pub mod tracer_particles {
         }
     }
 
+    #[derive(Debug)]
     pub struct Particle<T: PtrTrait> {
         pub x: T,
         pub y: T,
