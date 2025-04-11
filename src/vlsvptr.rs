@@ -12,20 +12,11 @@ use tracer_fields::{
 use tracer_particles::*;
 use vlsv_reader::vlsv_reader::VlsvFile;
 
+// fn push_population_cpu<T>(p: &ParticlePopulation<T>) {
+//     todo!();
+// }
+
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
-    // let file = std::env::args()
-    //     .skip(1)
-    //     .collect::<Vec<String>>()
-    //     .first()
-    //     .cloned()
-    //     .expect("No file provided!");
-
-    // let fields = VlsvStaticField::<f32>::new(&file);
-    // println!(
-    //     "{:?}",
-    //     fields.get_fields_at(0.0, 6378137.0_f32 * 8_f32, 0.0, 0.0)
-    // );
-
     let field = DipoleField::<f32>::new(physical_constants::f32::DIPOLE_MOMENT);
     let p = ParticlePopulation::<f32>::new_with_energy_at_Lshell(
         1024,

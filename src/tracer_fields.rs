@@ -5,28 +5,38 @@ pub mod vlsv_reader {
     use num_traits::Float;
     use vlsv_reader::vlsv_reader::VlsvFile;
 
-    pub trait Field<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug> {
+    pub trait PtrTrait:
+        Float + Pod + Send + Sync + Sized + std::fmt::Debug + num_traits::ToBytes
+    {
+    }
+
+    impl<T> PtrTrait for T where
+        T: Float + Pod + Send + Sync + Sized + std::fmt::Debug + num_traits::ToBytes
+    {
+    }
+
+    pub trait Field<T: PtrTrait> {
         fn get_fields_at(&self, time: T, x: T, y: T, z: T) -> Option<[T; 6]>;
     }
 
-    pub struct DipoleField<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug> {
+    pub struct DipoleField<T: PtrTrait> {
         pub moment: T,
     }
 
-    impl<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug> DipoleField<T> {
+    impl<T: PtrTrait> DipoleField<T> {
         pub fn new(moment: T) -> Self {
             DipoleField { moment: moment }
         }
     }
 
-    pub struct VlsvStaticField<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug> {
+    pub struct VlsvStaticField<T: PtrTrait> {
         b: Array4<T>,
         e: Array4<T>,
         extents: [T; 6],
         ds: T,
     }
 
-    impl<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug> VlsvStaticField<T> {
+    impl<T: PtrTrait> VlsvStaticField<T> {
         pub fn new(filename: &String) -> Self {
             let f = VlsvFile::new(&filename).unwrap();
             let extents: [T; 6] = [
@@ -131,9 +141,7 @@ pub mod vlsv_reader {
         }
     }
 
-    impl<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug> Field<T>
-        for DipoleField<T>
-    {
+    impl<T: PtrTrait> Field<T> for DipoleField<T> {
         fn get_fields_at(&self, _time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
             let moment = T::from(self.moment).unwrap();
             let r: [T; 3] = [x, y, z];
@@ -157,9 +165,7 @@ pub mod vlsv_reader {
         }
     }
 
-    impl<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug> Field<T>
-        for VlsvStaticField<T>
-    {
+    impl<T: PtrTrait> Field<T> for VlsvStaticField<T> {
         fn get_fields_at(&self, _time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
             let (grid_point, weights) = self.real2mesh(x, y, z)?;
             let e_field = self.trilerp(grid_point, weights, &self.e);

@@ -1,5 +1,6 @@
 pub mod tracer_particles {
     use crate::constants::physical_constants;
+    use crate::tracer_fields::vlsv_reader::PtrTrait;
     use bytemuck::Pod;
     use num_traits::Float;
     use rand::Rng;
@@ -10,30 +11,28 @@ pub mod tracer_particles {
 
     pub fn mag<T>(x: T, y: T, z: T) -> T
     where
-        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes,
+        T: PtrTrait,
     {
         T::sqrt(x * x + y * y + z * z)
     }
 
     pub fn mag2<T>(x: T, y: T, z: T) -> T
     where
-        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes,
+        T: PtrTrait,
     {
         x * x + y * y + z * z
     }
 
     pub fn gamma<T>(vx: T, vy: T, vz: T) -> T
     where
-        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes,
+        T: PtrTrait,
     {
         let term1: T = T::one();
         let term2: T = T::sqrt(T::one() - (mag2(vx, vy, vz) / T::from(3.0e8 * 3.0e8).unwrap()));
         term1 / term2
     }
 
-    pub struct ParticlePopulation<
-        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes,
-    > {
+    pub struct ParticlePopulation<T: PtrTrait> {
         pub x: Vec<T>,
         pub y: Vec<T>,
         pub z: Vec<T>,
@@ -45,9 +44,7 @@ pub mod tracer_particles {
         pub charge: T,
     }
 
-    impl<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes>
-        ParticlePopulation<T>
-    {
+    impl<T: PtrTrait> ParticlePopulation<T> {
         pub fn new(n: usize, mass: T, charge: T) -> Self {
             Self {
                 x: Vec::<T>::with_capacity(n),
@@ -191,9 +188,7 @@ pub mod tracer_particles {
         }
     }
 
-    pub struct Particle<
-        T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes,
-    > {
+    pub struct Particle<T: PtrTrait> {
         pub x: T,
         pub y: T,
         pub z: T,
@@ -203,9 +198,7 @@ pub mod tracer_particles {
         pub alive: bool,
     }
 
-    impl<T: Float + Pod + Send + Sized + std::marker::Sync + std::fmt::Debug + num_traits::ToBytes>
-        Particle<T>
-    {
+    impl<T: PtrTrait> Particle<T> {
         pub fn new(x: T, y: T, z: T, vx: T, vy: T, vz: T, alive: bool) -> Self {
             Self {
                 x,
