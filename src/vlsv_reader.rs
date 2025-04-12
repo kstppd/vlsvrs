@@ -100,7 +100,9 @@ pub mod vlsv_reader {
                 };
                 map.insert(variable.name.clone().unwrap().clone(), variable.clone());
             } else {
-                eprintln!("WARNING: Domain Decomposition not found in file!");
+                eprintln!(
+                    "WARNING: Domain Decomposition not found in file! FS Grid reading will fail!"
+                );
             }
             Ok(Self {
                 filename: filename.clone(),
@@ -148,6 +150,24 @@ pub mod vlsv_reader {
                 _ => panic!("Did not expect data size found!"),
             };
             Some(retval)
+        }
+
+        pub fn read_config(&self) -> Option<String> {
+            let name = "config_file";
+            let info = self.get_data_info(name)?;
+            println!("{:?}", info);
+            let f = std::fs::File::open(&self.filename)
+                .map_err(|err| {
+                    eprintln!("ERROR: could not open file '{}': {:?}", self.filename, err)
+                })
+                .unwrap();
+            let mut buffer: Vec<u8> = Vec::with_capacity(info.arraysize);
+            unsafe {
+                buffer.set_len(info.arraysize);
+            }
+            f.read_exact_at(&mut buffer, info.offset as u64).unwrap();
+            let cfgfile = String::from_utf8(buffer).unwrap();
+            Some(cfgfile)
         }
 
         fn read_variable_into<T: Sized + Pod>(&self, name: &str, dst: &mut [T]) {

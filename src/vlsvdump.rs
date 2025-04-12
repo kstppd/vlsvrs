@@ -1,45 +1,70 @@
-mod tracer_fields;
 mod vlsv_reader;
-use tracer_fields::vlsv_reader::VlsvStaticField;
-use tracer_fields::{
-    vlsv_reader::{DipoleField, Field},
-    *,
-};
+use clap::Parser;
 use vlsv_reader::vlsv_reader::VlsvFile;
 
-fn dump(fname: &String) -> Result<(), Box<dyn std::error::Error>> {
+/// Simple CLI tool for reading .vlsv files
+#[derive(Parser, Debug)]
+#[command(
+    name = "vlsvdump",
+    version,
+    about = "Reads and displays variables or config from .vlsv files",
+    long_about = r#"This tool allows you to read and display the configuration
+and variables from a .vlsv file.
+Author:
+    Kostis Papadakis <kpapadakis@protonmail.com> (2025) "#
+)]
+struct Args {
+    /// Path to the .vlsv file
+    #[arg()]
+    file: String,
+
+    /// Prints config
+    #[arg(short = 'c', long = "config")]
+    print_config: bool,
+
+    /// Prints variables
+    #[arg(short = 'v', long = "vars")]
+    print_vars: bool,
+}
+
+fn print_variables(fname: &String) -> Result<(), Box<dyn std::error::Error>> {
     let f = VlsvFile::new(fname)?;
-    println!(
-        "File {} contains:",
-        std::path::Path::new(&f.filename)
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-    );
+    print!("[");
     for v in f.data.iter() {
         if v.1.arraysize.is_some() {}
-        println!("\t{}", &v.0);
+        print!("{}, ", &v.0);
     }
+    println!("]");
+    Ok(())
+}
+
+fn print_config(fname: &String) -> Result<(), Box<dyn std::error::Error>> {
+    let f = VlsvFile::new(fname)?;
+    println!("{},", f.read_config().expect("Config not found"));
     Ok(())
 }
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
-    let file = std::env::args()
-        .skip(1)
-        .collect::<Vec<String>>()
-        .first()
-        .cloned()
-        .expect("No file provided!");
+    let args = Args::parse();
 
-    // if dump(&file).is_err() {
-    //     return Err(std::process::ExitCode::FAILURE);
-    // }
-    // let fields = Vc::<f64>::new(moment);
-    let fields = VlsvStaticField::<f32>::new(&file);
-    println!(
-        "{:?}",
-        fields.get_fields_at(0.0, 6378137.0_f32 * 8_f32, 0.0, 0.0)
-    );
+    if !args.print_config && !args.print_vars {
+        eprintln!("Error: At least one of -c or -v must be specified.");
+        return Err(std::process::ExitCode::FAILURE);
+    }
+
+    if args.print_config {
+        if let Err(e) = print_config(&args.file) {
+            eprintln!("Failed to print config: {}", e);
+            return Err(std::process::ExitCode::FAILURE);
+        }
+    }
+
+    if args.print_vars {
+        if let Err(e) = print_variables(&args.file) {
+            eprintln!("Failed to print variables: {}", e);
+            return Err(std::process::ExitCode::FAILURE);
+        }
+    }
+
     Ok(std::process::ExitCode::SUCCESS)
 }
