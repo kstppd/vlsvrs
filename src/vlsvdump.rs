@@ -34,8 +34,15 @@ struct Args {
 fn print_variables(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
     print!("[");
     for v in f.data.iter() {
-        if v.1.arraysize.is_some() {}
-        print!("{}, ", &v.0);
+        if v.1.arraysize.is_some() {
+            if f.get_data_info(v.0).unwrap().arraysize < 3
+                && f.get_data_info(v.0).unwrap().vectorsize < 3
+            {
+                print!("{}[{:.2?}], ", &v.0, f.read_parameter(v.0).unwrap());
+            } else {
+                print!("{}, ", &v.0);
+            }
+        }
     }
     println!("]");
     Ok(())
@@ -48,6 +55,7 @@ fn print_config(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
 
 fn print_version(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
     println!("{},", f.read_version().expect("Version not found"));
+    println!("{},", f.read_parameter("time").unwrap());
     Ok(())
 }
 

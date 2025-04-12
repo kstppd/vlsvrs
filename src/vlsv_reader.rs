@@ -40,12 +40,12 @@ pub mod vlsv_reader {
     }
 
     #[derive(Debug, Clone)]
-    struct VlsvDataset {
-        offset: usize,
-        arraysize: usize,
-        vectorsize: usize,
-        datasize: usize,
-        datatype: String,
+    pub struct VlsvDataset {
+        pub offset: usize,
+        pub arraysize: usize,
+        pub vectorsize: usize,
+        pub datasize: usize,
+        pub datatype: String,
     }
 
     #[derive(Debug)]
@@ -387,7 +387,7 @@ pub mod vlsv_reader {
             todo!();
         }
 
-        fn get_data_info(&self, name: &str) -> Option<VlsvDataset> {
+        pub fn get_data_info(&self, name: &str) -> Option<VlsvDataset> {
             let entry = self.data.get(name)?;
 
             let offset = entry
