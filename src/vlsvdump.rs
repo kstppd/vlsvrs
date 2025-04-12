@@ -25,10 +25,13 @@ struct Args {
     /// Prints variables
     #[arg(short = 'v', long = "vars")]
     print_vars: bool,
+
+    /// Prints git status of run
+    #[arg(short = 'g', long = "git")]
+    print_git: bool,
 }
 
-fn print_variables(fname: &String) -> Result<(), Box<dyn std::error::Error>> {
-    let f = VlsvFile::new(fname)?;
+fn print_variables(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
     print!("[");
     for v in f.data.iter() {
         if v.1.arraysize.is_some() {}
@@ -38,30 +41,42 @@ fn print_variables(fname: &String) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn print_config(fname: &String) -> Result<(), Box<dyn std::error::Error>> {
-    let f = VlsvFile::new(fname)?;
+fn print_config(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
     println!("{},", f.read_config().expect("Config not found"));
+    Ok(())
+}
+
+fn print_version(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
+    println!("{},", f.read_version().expect("Version not found"));
     Ok(())
 }
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let args = Args::parse();
 
-    if !args.print_config && !args.print_vars {
-        eprintln!("Error: At least one of -c or -v must be specified.");
+    if !args.print_config && !args.print_vars && !args.print_git {
+        eprintln!("Error: At least one of -c, -v or -g  must be specified.");
         return Err(std::process::ExitCode::FAILURE);
     }
+    let f = VlsvFile::new(&args.file).unwrap();
 
     if args.print_config {
-        if let Err(e) = print_config(&args.file) {
+        if let Err(e) = print_config(&f) {
             eprintln!("Failed to print config: {}", e);
             return Err(std::process::ExitCode::FAILURE);
         }
     }
 
     if args.print_vars {
-        if let Err(e) = print_variables(&args.file) {
+        if let Err(e) = print_variables(&f) {
             eprintln!("Failed to print variables: {}", e);
+            return Err(std::process::ExitCode::FAILURE);
+        }
+    }
+
+    if args.print_git {
+        if let Err(e) = print_version(&f) {
+            eprintln!("Failed to print version: {}", e);
             return Err(std::process::ExitCode::FAILURE);
         }
     }
