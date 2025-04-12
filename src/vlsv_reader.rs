@@ -158,29 +158,46 @@ pub mod vlsv_reader {
                 })
                 .unwrap();
 
+            //We now allow mismatch of T and file data only for floating point types. In such case
+            // we use unsafed to cast appropriatelly
             if info.datasize != std::mem::size_of::<T>() {
-                eprintln!("Unsafe read assumiung file is f32 and T f64 ");
-                // panic!(
-                //     "ERROR: datasize/datatype error. You asked for {} bytes but the vlsv file has {} bytes as datasize for dataset \"{name}\"",
-                //     std::mem::size_of::<T>(),
-                //     info.datasize,
-                //     name = name,
-                // );
-                let size = dst.len();
-                let mut _dst: Vec<f32> = Vec::<f32>::with_capacity(size);
-                unsafe {
-                    _dst.set_len(size);
+                if info.datatype != "float" {
+                    panic!("Casting to T supported only for float types.");
                 }
-                f.read_exact_at(cast_slice_mut(_dst.as_mut_slice()), info.offset as u64)
-                    .unwrap();
-                unsafe {
-                    for i in 0..size {
-                        let value = _dst[i];
-                        let valuef64 = value as f64;
-                        let bytes = valuef64.to_ne_bytes();
-                        let b = dst.as_mut_ptr().add(i);
-                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), b.cast(), 8);
+                // 1) T is f64 and file is f32
+                if info.datasize == 4 && std::mem::size_of::<T>() == 8 {
+                    let size = dst.len();
+                    let mut _dst: Vec<f32> = Vec::<f32>::with_capacity(size);
+                    unsafe {
+                        _dst.set_len(size);
+                        f.read_exact_at(cast_slice_mut(_dst.as_mut_slice()), info.offset as u64)
+                            .unwrap();
+                        for i in 0..size {
+                            let value = _dst[i];
+                            let valuef64 = value as f64;
+                            let bytes = valuef64.to_ne_bytes();
+                            let b = dst.as_mut_ptr().add(i);
+                            std::ptr::copy_nonoverlapping(bytes.as_ptr(), b.cast(), 8);
+                        }
                     }
+                // 2) T is f32 and file is f64
+                } else if info.datasize == 8 && std::mem::size_of::<T>() == 4 {
+                    let size = dst.len();
+                    let mut _dst: Vec<f64> = Vec::<f64>::with_capacity(size);
+                    unsafe {
+                        _dst.set_len(size);
+                        f.read_exact_at(cast_slice_mut(_dst.as_mut_slice()), info.offset as u64)
+                            .unwrap();
+                        for i in 0..size {
+                            let value = _dst[i];
+                            let valuef32 = value as f32;
+                            let bytes = valuef32.to_ne_bytes();
+                            let b = dst.as_mut_ptr().add(i);
+                            std::ptr::copy_nonoverlapping(bytes.as_ptr(), b.cast(), 8);
+                        }
+                    }
+                } else {
+                    unreachable!("This combination is unhandled");
                 }
             } else {
                 f.read_exact_at(cast_slice_mut(dst), info.offset as u64)
@@ -295,6 +312,7 @@ pub mod vlsv_reader {
             }
             Some(ordered_var)
         }
+
         #[allow(dead_code, unused_variables, unused_assignments)]
         pub fn read_vggrid_variable<T: Sized + Pod + num_traits::identities::Zero>(
             &self,

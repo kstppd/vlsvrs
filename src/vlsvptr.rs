@@ -4,7 +4,6 @@ mod tracer_particles;
 mod vlsv_reader;
 use crate::constants::physical_constants;
 use crate::tracer_particles::tracer_particles::ParticlePopulation;
-use core::panic;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
 use std::sync::{Arc, Mutex};
