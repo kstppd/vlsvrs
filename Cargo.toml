@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 bytemuck = "1.22.0"
 clap = { version = "4.4", features = ["derive"] }
+libc = "0.2.172"
 ndarray = "0.16.1"
 num-traits = "0.2.19"
 rand = "0.9.0"
@@ -27,3 +28,7 @@ path="src/vlsvdump.rs"
 [[bin]]
 name="vlsvptr"
 path="src/vlsvptr.rs"
+
+[lib]
+name = "vlsvrs"
+crate-type = ["staticlib"]
