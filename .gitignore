@@ -1,4 +1,5 @@
 /target
 *png
 *.ptr
+*lock
 
