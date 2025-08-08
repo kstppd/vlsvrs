@@ -2,4 +2,13 @@
 *png
 *.ptr
 *lock
+__pycache__/
+assets/
+bin
+plot.py
+plotvdfs.py
+vdf.npy
+vdf_extract.py
+vg.npy
+
 
