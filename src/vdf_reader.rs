@@ -8,7 +8,7 @@ fn main() {
         .skip(1)
         .collect::<Vec<String>>();
     let f = VlsvFile::new(&args[0]).unwrap();
-    let vdf = f.read_vdf(1, "proton").expect("No VDF in CellID");
+    let vdf = f.read_vdf(1, "antiproton").expect("No VDF in CellID");
     println!("vdf size = {}", vdf.len());
     ndarray_npy::write_npy("vdf.npy", &vdf).unwrap();
     println!("{},", f.read_scalar_parameter("time").unwrap());

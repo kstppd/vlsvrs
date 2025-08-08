@@ -586,18 +586,52 @@ pub mod vlsv_reader {
         }
 
         pub fn read_vdf(&self, cid: usize, pop: &str) -> Option<Array3<f32>> {
-            let blockspercell: VlsvDataset =
-                self.root.blockspercell.as_ref()?.first()?.try_into().ok()?;
-            let cellswithblocks: VlsvDataset = self
-                .root
-                .cellswithblocks
-                .as_ref()?
-                .first()?
-                .try_into()
-                .ok()?;
-            let blockids: VlsvDataset = self.root.blockids.as_ref()?.first()?.try_into().ok()?;
-            let blockvariable: VlsvDataset =
-                self.root.blockvariable.as_ref()?.first()?.try_into().ok()?;
+            let blockspercell = TryInto::<VlsvDataset>::try_into(
+                self.root
+                    .blockspercell
+                    .as_ref()
+                    .and_then(|items| items.iter().find(|v| v.name.as_deref() == Some(pop)))
+                    .or_else(|| {
+                        eprintln!("ERROR: blockspercell with name '{pop}' not found in VLSV file");
+                        None
+                    })?,
+            )
+            .ok()?;
+            let cellswithblocks = TryInto::<VlsvDataset>::try_into(
+                self.root
+                    .cellswithblocks
+                    .as_ref()
+                    .and_then(|items| items.iter().find(|v| v.name.as_deref() == Some(pop)))
+                    .or_else(|| {
+                        eprintln!(
+                            "ERROR: cellswithblocks with name '{pop}' not found in VLSV file"
+                        );
+                        None
+                    })?,
+            )
+            .ok()?;
+            let blockids = TryInto::<VlsvDataset>::try_into(
+                self.root
+                    .blockids
+                    .as_ref()
+                    .and_then(|items| items.iter().find(|v| v.name.as_deref() == Some(pop)))
+                    .or_else(|| {
+                        eprintln!("ERROR: blockids with name '{pop}' not found in VLSV file");
+                        None
+                    })?,
+            )
+            .ok()?;
+            let blockvariable = TryInto::<VlsvDataset>::try_into(
+                self.root
+                    .blockvariable
+                    .as_ref()
+                    .and_then(|items| items.iter().find(|v| v.name.as_deref() == Some(pop)))
+                    .or_else(|| {
+                        eprintln!("ERROR: blockvariable with name '{pop}' not found in VLSV file");
+                        None
+                    })?,
+            )
+            .ok()?;
             assert!(
                 blockvariable.datasize == 4,
                 "VDF is not f32! This is not handled yet"
