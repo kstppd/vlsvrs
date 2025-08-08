@@ -96,6 +96,116 @@ pub mod vlsv_reader {
         pub datatype: String,
     }
 
+    fn cellid_to_ijk(cid: u64, nx: usize, ny: usize) -> (usize, usize, usize) {
+        let lin = (cid - 1) as usize;
+        let i = lin % nx;
+        let j = (lin / nx) % ny;
+        let k = lin / (nx * ny);
+        (i, j, k)
+    }
+
+    fn amr_level(cellid: u64, x0: usize, y0: usize, z0: usize, lmax: u32) -> Option<u32> {
+        let n0 = (x0 as u64) * (y0 as u64) * (z0 as u64);
+        let mut cum = 0u64;
+        for lvl in 0..=lmax {
+            let count = n0.checked_shl(3 * lvl)?;
+            if cellid <= cum + count {
+                return Some(lvl);
+            }
+            cum = cum.checked_add(count)?;
+        }
+        None
+    }
+
+    fn cellid_to_fine_ijk(
+        cellid: u64,
+        level: u32,
+        lmax: u32,
+        x0: usize,
+        y0: usize,
+        z0: usize,
+    ) -> Option<(usize, usize, usize)> {
+        let n0 = (x0 as u64) * (y0 as u64) * (z0 as u64);
+
+        let mut cum = 0u64;
+        for l in 0..level {
+            cum = cum.checked_add(n0.checked_shl(3 * l)?)?;
+        }
+
+        let id0 = cellid.checked_sub(cum)?.checked_sub(1)?;
+        let nx_l = (x0 as u64) << level;
+        let ny_l = (y0 as u64) << level;
+
+        let i_l = (id0 % nx_l) as usize;
+        let j_l = ((id0 / nx_l) % ny_l) as usize;
+        let k_l = (id0 / (nx_l * ny_l)) as usize;
+
+        let scale = 1usize << ((lmax - level) as usize);
+        Some((i_l * scale, j_l * scale, k_l * scale))
+    }
+
+    pub fn build_vg_indexes_on_fg(
+        cell_ids: &[u64],
+        fg_dims: (usize, usize, usize),
+        x0: usize,
+        y0: usize,
+        z0: usize,
+        lmax: u32,
+    ) -> Array3<usize> {
+        let (fx, fy, fz) = fg_dims;
+        assert_eq!(fx, x0 << lmax);
+        assert_eq!(fy, y0 << lmax);
+        assert_eq!(fz, z0 << lmax);
+
+        let mut map = Array3::<usize>::from_elem((fx, fy, fz), usize::MAX);
+        for (vg_idx, &cid) in cell_ids.iter().enumerate() {
+            let lvl = amr_level(cid, x0, y0, z0, lmax).expect("Invalid CellID or max level");
+            let (sx, sy, sz) = cellid_to_fine_ijk(cid, lvl, lmax, x0, y0, z0)
+                .expect("Failed to map CellID to fine ijk");
+            let scale = 1usize << (lmax - lvl) as usize;
+            let ex = sx + scale;
+            let ey = sy + scale;
+            let ez = sz + scale;
+            assert!(ex <= fx && ey <= fy && ez <= fz);
+            map.slice_mut(s![sx..ex, sy..ey, sz..ez]).fill(vg_idx);
+        }
+        map
+    }
+
+    pub fn vg_variable_to_fg<T: bytemuck::Pod + Copy + Default>(
+        cell_ids: &[u64],
+        vg_rows: &[T],
+        vecsz: usize,
+        x0: usize,
+        y0: usize,
+        z0: usize,
+        lmax: u32,
+    ) -> ndarray::Array4<T> {
+        use ndarray::{Array4, s};
+        let (fx, fy, fz) = (x0 << lmax, y0 << lmax, z0 << lmax);
+        let mut fg = Array4::<T>::default((fx, fy, fz, vecsz));
+        assert_eq!(vg_rows.len(), cell_ids.len() * vecsz);
+
+        for (idx, &cid) in cell_ids.iter().enumerate() {
+            let lvl = amr_level(cid, x0, y0, z0, lmax).expect("bad CellID/levels");
+            let (sx, sy, sz) = cellid_to_fine_ijk(cid, lvl, lmax, x0, y0, z0).unwrap();
+            let scale = 1usize << ((lmax - lvl) as usize);
+            let (ex, ey, ez) = (sx + scale, sy + scale, sz + scale);
+
+            let row = &vg_rows[idx * vecsz..(idx + 1) * vecsz];
+            let mut block = fg.slice_mut(s![sx..ex, sy..ey, sz..ez, ..]);
+            for xi in 0..scale {
+                for yj in 0..scale {
+                    for zk in 0..scale {
+                        let mut vox = block.slice_mut(s![xi, yj, zk, ..]);
+                        vox.assign(&ndarray::Array1::from(row.to_vec()));
+                    }
+                }
+            }
+        }
+        fg
+    }
+
     impl TryFrom<&Variable> for VlsvDataset {
         type Error = String;
 
@@ -210,7 +320,7 @@ pub mod vlsv_reader {
                 parameters: params,
                 xml: xml_string,
                 memmap: mmap,
-                root, // reuse the parsed root
+                root,
             })
         }
 
@@ -307,67 +417,36 @@ pub mod vlsv_reader {
                 "Attempt to read out-of-bounds from memory map"
             );
             let src_bytes = &self.memmap[info.offset..info.offset + expected_bytes];
-
-            //We now allow mismatch of T and file data only for floating point types. In such case
-            // we use unsafed to cast appropriatelly
-            if info.datasize != std::mem::size_of::<T>() {
-                if info.datatype != "float" {
-                    panic!("Casting to T supported only for float types.");
+            //We now allow mismatch of T and file data.
+            if info.datasize == 4 && std::mem::size_of::<T>() == 8 {
+                // file f32 ->  f64
+                let dst_f64: &mut [f64] = bytemuck::cast_slice_mut(dst);
+                for i in 0..dst_f64.len() {
+                    let off = i * 4;
+                    let v = f32::from_ne_bytes(src_bytes[off..off + 4].try_into().unwrap());
+                    dst_f64[i] = v as f64;
                 }
-                // 1) T is f64 and file is f32
-                if info.datasize == 4 && std::mem::size_of::<T>() == 8 {
-                    let size = dst.len();
-                    let mut _dst: Vec<f32> = Vec::<f32>::with_capacity(size);
-                    unsafe {
-                        _dst.set_len(size);
-                        _dst.copy_from_slice(cast_slice(src_bytes));
-                        // f.read_exact_at(cast_slice_mut(_dst.as_mut_slice()), info.offset as u64)
-                        //     .unwrap();
-                        for i in 0..size {
-                            let value = _dst[i];
-                            let valuef64 = value as f64;
-                            let bytes = valuef64.to_ne_bytes();
-                            let b = dst.as_mut_ptr().add(i);
-                            std::ptr::copy_nonoverlapping(bytes.as_ptr(), b.cast(), 8);
-                        }
-                    }
-                // 2) T is f32 and file is f64
-                } else if info.datasize == 8 && std::mem::size_of::<T>() == 4 {
-                    let size = dst.len();
-                    let mut _dst: Vec<f64> = Vec::<f64>::with_capacity(size);
-                    unsafe {
-                        _dst.set_len(size);
-                        _dst.copy_from_slice(cast_slice(src_bytes));
-                        for i in 0..size {
-                            let value = _dst[i];
-                            let valuef32 = value as f32;
-                            let bytes = valuef32.to_ne_bytes();
-                            let b = dst.as_mut_ptr().add(i);
-                            std::ptr::copy_nonoverlapping(bytes.as_ptr(), b.cast(), 8);
-                        }
-                    }
-                } else {
-                    unreachable!("This combination is unhandled");
-                }
-            } else {
-                //Handle alignement here
-                let (head, aligned, tail) = unsafe { src_bytes.align_to::<T>() };
-                if head.is_empty() && tail.is_empty() {
-                    assert_eq!(aligned.len(), size);
-                    dst.copy_from_slice(aligned);
-                } else {
-                    for i in 0..size {
-                        let ptr = unsafe { src_bytes.as_ptr().add(i * std::mem::size_of::<T>()) };
-                        unsafe {
-                            std::ptr::copy_nonoverlapping(
-                                ptr,
-                                dst.as_mut_ptr().add(i).cast::<u8>(),
-                                std::mem::size_of::<T>(),
-                            );
-                        }
-                    }
-                }
+                return;
             }
+
+            if info.datasize == 8 && std::mem::size_of::<T>() == 4 {
+                //file f64 -> f32
+                let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
+                for i in 0..dst_f32.len() {
+                    let off = i * 8;
+                    let v = f64::from_ne_bytes(src_bytes[off..off + 8].try_into().unwrap());
+                    dst_f32[i] = v as f32;
+                }
+                return;
+            }
+
+            if info.datasize == std::mem::size_of::<T>() {
+                let dst_bytes = bytemuck::cast_slice_mut::<T, u8>(dst);
+                dst_bytes.copy_from_slice(src_bytes);
+                return;
+            }
+
+            panic!("Unhandled datasize/element-size combination");
         }
 
         pub fn get_wid(&self) -> Option<usize> {
@@ -502,6 +581,27 @@ pub mod vlsv_reader {
                 .clone()
                 .try_into()
                 .ok()
+        }
+
+        pub fn read_vg_variable_as_fg<T: bytemuck::Pod + Copy + Default>(
+            &self,
+            name: &str,
+        ) -> Option<ndarray::Array4<T>> {
+            let ds = self.get_dataset(name)?;
+            let vecsz = ds.vectorsize;
+            let x0 = self.read_scalar_parameter("xcells_ini")? as usize;
+            let y0 = self.read_scalar_parameter("ycells_ini")? as usize;
+            let z0 = self.read_scalar_parameter("zcells_ini")? as usize;
+            let lmax = self.get_max_amr_refinement()?;
+            let cellid_ds = self.get_dataset("CellID")?;
+            let mut cell_ids = vec![0u64; cellid_ds.arraysize];
+            self.read_variable_into::<u64>("CellID", Some(cellid_ds), &mut cell_ids);
+            let n_cells = dbg!(ds.arraysize);
+            let mut vg_rows = vec![T::default(); n_cells * vecsz];
+            self.read_variable_into::<T>(name, Some(ds), vg_rows.as_mut_slice());
+            Some(vg_variable_to_fg(
+                &cell_ids, &vg_rows, vecsz, x0, y0, z0, lmax,
+            ))
         }
 
         pub fn read_fsgrid_variable<T: Pod + Zero>(&self, name: &str) -> Option<Array4<T>> {
@@ -685,17 +785,11 @@ pub mod vlsv_reader {
                 (i, j, k)
             };
 
-            let ijk2id = |i: usize, j: usize, k: usize| -> usize {
-                assert!(i < nvx && j < nvy && k < nvz, "out of bounds {i},{j},{k}");
-                i + j * nvx + k * (nvx * nvy)
-            };
-
             let mut vdf = Array3::<f32>::zeros((nvx, nvy, nvz));
             for (block_idx, &bid_u32) in block_ids.iter().enumerate() {
                 let bid = bid_u32 as usize;
                 let (bi, bj, bk) = id2ijk(bid);
                 let block_buf = &blocks[block_idx * wid3..(block_idx + 1) * wid3];
-
                 for dk in 0..wid {
                     for dj in 0..wid {
                         for di in 0..wid {
@@ -704,7 +798,6 @@ pub mod vlsv_reader {
                             let gi = bi * wid + di;
                             let gj = bj * wid + dj;
                             let gk = bk * wid + dk;
-                            let gid = ijk2id(gi, gj, gk);
                             vdf[(gi, gj, gk)] = val;
                         }
                     }

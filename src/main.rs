@@ -12,7 +12,7 @@ fn main() {
 
     let mut rho = VlsvFile::new(&file)
         .unwrap()
-        .read_fsgrid_variable::<f64>("fg_E")
+        .read_vg_variable_as_fg::<f64>("proton/vg_rho")
         .unwrap();
     println!("a={:?}", rho.dim());
     let max = rho.fold(f64::NEG_INFINITY, |a, &b| a.max(b));
