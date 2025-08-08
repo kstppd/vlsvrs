@@ -54,12 +54,12 @@ pub mod vlsv_reader {
         pub fn new(filename: &String) -> Self {
             let f = VlsvFile::new(&filename).unwrap();
             let extents: [T; 6] = [
-                T::from(f.read_parameter("xmin").unwrap()).unwrap(),
-                T::from(f.read_parameter("ymin").unwrap()).unwrap(),
-                T::from(f.read_parameter("zmin").unwrap()).unwrap(),
-                T::from(f.read_parameter("xmax").unwrap()).unwrap(),
-                T::from(f.read_parameter("ymax").unwrap()).unwrap(),
-                T::from(f.read_parameter("zmax").unwrap()).unwrap(),
+                T::from(f.read_scalar_parameter("xmin").unwrap()).unwrap(),
+                T::from(f.read_scalar_parameter("ymin").unwrap()).unwrap(),
+                T::from(f.read_scalar_parameter("zmin").unwrap()).unwrap(),
+                T::from(f.read_scalar_parameter("xmax").unwrap()).unwrap(),
+                T::from(f.read_scalar_parameter("ymax").unwrap()).unwrap(),
+                T::from(f.read_scalar_parameter("zmax").unwrap()).unwrap(),
             ];
             let b = f.read_fsgrid_variable::<T>("fg_b").unwrap();
             let e = f.read_fsgrid_variable::<T>("fg_e").unwrap();

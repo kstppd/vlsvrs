@@ -2,7 +2,7 @@
 pub mod vlsv_reader {
     use bytemuck::{Pod, cast_slice};
     use memmap2::Mmap;
-    use ndarray::{Array4, Order, s};
+    use ndarray::{Array3, Array4, Order, s};
     use num_traits::{self, Zero};
     use serde::Deserialize;
     use std::collections::HashMap;
@@ -491,7 +491,7 @@ pub mod vlsv_reader {
             Some((nx, ny, nz))
         }
 
-        fn get_dataset(&self, name: &str) -> Option<VlsvDataset> {
+        pub fn get_dataset(&self, name: &str) -> Option<VlsvDataset> {
             self.variables
                 .get(name)
                 .or_else(|| self.parameters.get(name))
@@ -585,7 +585,7 @@ pub mod vlsv_reader {
             Some(ordered_var)
         }
 
-        pub fn read_vdf(&self, cid: usize, pop: &str) -> Option<Vec<f32>> {
+        pub fn read_vdf(&self, cid: usize, pop: &str) -> Option<Array3<f32>> {
             let blockspercell: VlsvDataset =
                 self.root.blockspercell.as_ref()?.first()?.try_into().ok()?;
             let cellswithblocks: VlsvDataset = self
@@ -656,8 +656,7 @@ pub mod vlsv_reader {
                 i + j * nvx + k * (nvx * nvy)
             };
 
-            let mut vdf = vec![0.0f32; nvx * nvy * nvz];
-
+            let mut vdf = Array3::<f32>::zeros((nvx, nvy, nvz));
             for (block_idx, &bid_u32) in block_ids.iter().enumerate() {
                 let bid = bid_u32 as usize;
                 let (bi, bj, bk) = id2ijk(bid);
@@ -672,7 +671,7 @@ pub mod vlsv_reader {
                             let gj = bj * wid + dj;
                             let gk = bk * wid + dk;
                             let gid = ijk2id(gi, gj, gk);
-                            vdf[gid] = val;
+                            vdf[(gi, gj, gk)] = val;
                         }
                     }
                 }
