@@ -1,3 +1,6 @@
+use ndarray::{Array2, Array3, Array4};
+use vlsv_reader::VlsvFile;
+
 #[allow(dead_code)]
 pub mod vlsv_reader {
     use bytemuck::{Pod, cast_slice};

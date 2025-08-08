@@ -20,21 +20,21 @@ serde = { version = "1.0", features = ["derive"] }
 serde-xml-rs = "0.6"
 
 [[bin]]
-name="test"
-path="src/main.rs"
+name="vlsv_viewer"
+path="src/vlsv_viewer.rs"
 
 [[bin]]
-name="vlsvdump"
-path="src/vlsvdump.rs"
+name="vlsv_dump"
+path="src/vlsv_dump.rs"
 
 [[bin]]
-name="vlsvptr"
-path="src/vlsvptr.rs"
+name="vlsv_ptr"
+path="src/vlsv_ptr.rs"
 
 [[bin]]
-name="vdfreader"
+name="vdf_reader"
 path="src/vdf_reader.rs"
 
 [lib]
 name = "vlsvrs"
-crate-type = ["rlib", "staticlib"]
+crate-type = ["rlib", "staticlib","cdylib"]
