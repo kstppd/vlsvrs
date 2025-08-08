@@ -96,7 +96,7 @@ pub mod vlsv_reader {
         pub datatype: String,
     }
 
-    fn cellid_to_ijk(cid: u64, nx: usize, ny: usize) -> (usize, usize, usize) {
+    fn cid2ijk(cid: u64, nx: usize, ny: usize) -> (usize, usize, usize) {
         let lin = (cid - 1) as usize;
         let i = lin % nx;
         let j = (lin / nx) % ny;
@@ -117,7 +117,7 @@ pub mod vlsv_reader {
         None
     }
 
-    fn cellid_to_fine_ijk(
+    fn cid2fineijk(
         cellid: u64,
         level: u32,
         lmax: u32,
@@ -160,8 +160,8 @@ pub mod vlsv_reader {
         let mut map = Array3::<usize>::from_elem((fx, fy, fz), usize::MAX);
         for (vg_idx, &cid) in cell_ids.iter().enumerate() {
             let lvl = amr_level(cid, x0, y0, z0, lmax).expect("Invalid CellID or max level");
-            let (sx, sy, sz) = cellid_to_fine_ijk(cid, lvl, lmax, x0, y0, z0)
-                .expect("Failed to map CellID to fine ijk");
+            let (sx, sy, sz) =
+                cid2fineijk(cid, lvl, lmax, x0, y0, z0).expect("Failed to map CellID to fine ijk");
             let scale = 1usize << (lmax - lvl) as usize;
             let ex = sx + scale;
             let ey = sy + scale;
@@ -188,7 +188,7 @@ pub mod vlsv_reader {
 
         for (idx, &cid) in cell_ids.iter().enumerate() {
             let lvl = amr_level(cid, x0, y0, z0, lmax).expect("bad CellID/levels");
-            let (sx, sy, sz) = cellid_to_fine_ijk(cid, lvl, lmax, x0, y0, z0).unwrap();
+            let (sx, sy, sz) = cid2fineijk(cid, lvl, lmax, x0, y0, z0).unwrap();
             let scale = 1usize << ((lmax - lvl) as usize);
             let (ex, ey, ez) = (sx + scale, sy + scale, sz + scale);
 
@@ -596,7 +596,7 @@ pub mod vlsv_reader {
             let cellid_ds = self.get_dataset("CellID")?;
             let mut cell_ids = vec![0u64; cellid_ds.arraysize];
             self.read_variable_into::<u64>("CellID", Some(cellid_ds), &mut cell_ids);
-            let n_cells = dbg!(ds.arraysize);
+            let n_cells = ds.arraysize;
             let mut vg_rows = vec![T::default(); n_cells * vecsz];
             self.read_variable_into::<T>(name, Some(ds), vg_rows.as_mut_slice());
             Some(vg_variable_to_fg(
@@ -605,9 +605,6 @@ pub mod vlsv_reader {
         }
 
         pub fn read_fsgrid_variable<T: Pod + Zero>(&self, name: &str) -> Option<Array4<T>> {
-            if name[0..3] != *"fg_" {
-                panic!("ERROR: Variable {} is not an fs_grid variable!", name);
-            }
             let info = self.get_dataset(name)?;
             let decomp = self.get_domain_decomposition()?;
             let ntasks = self.get_writting_tasks()?;
@@ -685,7 +682,7 @@ pub mod vlsv_reader {
             Some(ordered_var)
         }
 
-        pub fn read_vdf(&self, cid: usize, pop: &str) -> Option<Array3<f32>> {
+        pub fn read_vdf(&self, cid: usize, pop: &str) -> Option<Array4<f32>> {
             let blockspercell = TryInto::<VlsvDataset>::try_into(
                 self.root
                     .blockspercell
@@ -785,7 +782,7 @@ pub mod vlsv_reader {
                 (i, j, k)
             };
 
-            let mut vdf = Array3::<f32>::zeros((nvx, nvy, nvz));
+            let mut vdf = Array4::<f32>::zeros((nvx, nvy, nvz, 1));
             for (block_idx, &bid_u32) in block_ids.iter().enumerate() {
                 let bid = bid_u32 as usize;
                 let (bi, bj, bk) = id2ijk(bid);
@@ -798,7 +795,7 @@ pub mod vlsv_reader {
                             let gi = bi * wid + di;
                             let gj = bj * wid + dj;
                             let gk = bk * wid + dk;
-                            vdf[(gi, gj, gk)] = val;
+                            vdf[(gi, gj, gk, 0)] = val;
                         }
                     }
                 }
