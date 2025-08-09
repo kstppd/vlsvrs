@@ -30,4 +30,4 @@ path="src/vlsv_ptr.rs"
 
 [lib]
 name = "vlsvrs"
-crate-type = ["rlib", "staticlib","cdylib"]
+crate-type = ["staticlib","cdylib"]
