@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(non_snake_case)]
 mod constants;
 mod tracer_fields;
 mod tracer_particles;
@@ -7,8 +9,8 @@ use crate::tracer_particles::tracer_particles::ParticlePopulation;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
 use std::sync::{Arc, Mutex};
+use tracer_fields::vlsv_reader::PtrTrait;
 use tracer_fields::vlsv_reader::{DipoleField, Field};
-use tracer_fields::vlsv_reader::{PtrTrait, VlsvStaticField};
 use tracer_particles::tracer_particles::borris_adaptive;
 
 fn push_population_cpu<T: PtrTrait, F: Field<T> + std::marker::Sync>(
@@ -69,7 +71,7 @@ fn push_population_cpu_adpt<T: PtrTrait, F: Field<T> + std::marker::Sync>(
 }
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
-    let file = String::from("/home/kstppd/Desktop/bulk_with_fg_10.0000109.vlsv");
+    let _file = String::from("/home/kstppd/Desktop/bulk_with_fg_10.0000109.vlsv");
     let fields1 = DipoleField::<f64>::new(8e15_f64);
     // let fields1 = VlsvStaticField::<f64>::new(&file);
     let mut p = Arc::new(Mutex::new(

@@ -2,7 +2,7 @@ pub mod vlsv_reader;
 use crate::vlsv_reader::vlsv_reader::VlsvFile;
 use ndarray::Array4;
 use numpy::{IntoPyArray, PyArray4};
-use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use std::ffi::{CStr, c_void};
@@ -30,7 +30,7 @@ pub unsafe fn read_vg_as_fg_32(
     unsafe {
         (*nx, *ny, *nz, *nc) = var.dim();
     }
-    let mut vec = var.into_raw_vec();
+    let mut vec = var.into_raw_vec_and_offset().0;
     let ptr = vec.as_mut_ptr();
     std::mem::forget(vec);
     ptr
@@ -55,7 +55,7 @@ pub unsafe fn read_vg_as_fg_64(
     unsafe {
         (*nx, *ny, *nz, *nc) = var.dim();
     }
-    let mut vec = var.into_raw_vec();
+    let mut vec = var.into_raw_vec_and_offset().0;
     let ptr = vec.as_mut_ptr();
     std::mem::forget(vec);
     ptr
@@ -79,7 +79,7 @@ pub unsafe fn read_fg_32(
     unsafe {
         (*nx, *ny, *nz, *nc) = var.dim();
     }
-    let mut vec = var.into_raw_vec();
+    let mut vec = var.into_raw_vec_and_offset().0;
     let ptr = vec.as_mut_ptr();
     std::mem::forget(vec);
     ptr
@@ -103,7 +103,7 @@ pub unsafe fn read_fg_64(
     unsafe {
         (*nx, *ny, *nz, *nc) = var.dim();
     }
-    let mut vec = var.into_raw_vec();
+    let mut vec = var.into_raw_vec_and_offset().0;
     let ptr = vec.as_mut_ptr();
     std::mem::forget(vec);
     ptr
@@ -123,7 +123,7 @@ pub unsafe fn read_vdf_32(
     unsafe {
         (*nx, *ny, *nz, _) = var.dim();
     }
-    let mut vec = var.into_raw_vec();
+    let mut vec = var.into_raw_vec_and_offset().0;
     let ptr = vec.as_mut_ptr();
     std::mem::forget(vec);
     ptr

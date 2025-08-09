@@ -1,16 +1,11 @@
 pub mod tracer_particles {
-    use crate::constants::physical_constants;
     use crate::tracer_fields;
     use crate::tracer_fields::vlsv_reader::PtrTrait;
-    use bytemuck::Pod;
-    use num_traits::Float;
     use rand::Rng;
-    use rand::thread_rng;
-    use rand_distr::{Distribution, Normal};
-    use rayon::prelude::*;
+    use rand_distr::Normal;
     use std::f64::consts::PI;
     use std::io::Write;
-    use tracer_fields::vlsv_reader::{DipoleField, Field};
+    use tracer_fields::vlsv_reader::Field;
 
     pub fn mag<T>(x: T, y: T, z: T) -> T
     where
@@ -172,7 +167,6 @@ pub mod tracer_particles {
 
         pub fn new_with_energy_at_Lshell(n: usize, mass: T, charge: T, kev: T, L: T) -> Self {
             let mut pop = Self::new(n, mass, charge);
-            let mut rng = thread_rng();
             let c = T::from(3.0e8).unwrap();
             let ke_joules = kev * T::from(1.602e-16).unwrap();
 
@@ -181,7 +175,7 @@ pub mod tracer_particles {
 
             // Relativistic speed
             let v = c * (T::one() - (rest_energy / total_energy).powi(2)).sqrt();
-            let pitch_angle_dist = Normal::new(90.0, 5.0).unwrap();
+            let _pitch_angle_dist = Normal::new(90.0, 5.0).unwrap();
 
             for _ in 0..n {
                 let pitch_angle_deg = T::from(45.0).unwrap(); //
@@ -197,11 +191,11 @@ pub mod tracer_particles {
                 let vx = v_perp * gyro_phase.cos();
                 let vy = v_perp * gyro_phase.sin();
                 let vz = v_par;
-                let theta = rand::thread_rng().gen_range(0.0..2.0 * PI);
+                let _theta = rand::rng().random_range(0.0..2.0 * PI);
                 let x = L; //T::from(L.to_f64().unwrap() * theta.cos()).unwrap();
                 let y = T::zero();
                 // T::from(L.to_f64().unwrap() * theta.sin()).unwrap();
-                let z = T::zero();
+                let _z = T::zero();
 
                 pop.add_particle(
                     [
