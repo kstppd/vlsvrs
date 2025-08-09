@@ -1,12 +1,9 @@
 #[allow(dead_code)]
-use numpy::{IntoPyArray, PyArray4};
-use pyo3::prelude::*;
-use vlsv_reader::VlsvFile;
 pub mod vlsv_reader {
     use bytemuck::{Pod, cast_slice};
     use memmap2::Mmap;
-    use ndarray::{Array3, Array4, Order, s};
-    use num_traits::{self, Zero};
+    use ndarray::{Array3, Array4, Axis, Order, s};
+    use num_traits::{Zero, real::Real};
     use regex::Regex;
     use serde::Deserialize;
     use std::collections::HashMap;
@@ -98,6 +95,29 @@ pub mod vlsv_reader {
         pub vectorsize: usize,
         pub datasize: usize,
         pub datatype: String,
+    }
+
+    pub fn apply_op_in_place<T>(arr: &mut Array4<T>, op: Option<i32>)
+    where
+        T: Pod + Zero + Real + std::iter::Sum,
+    {
+        let Some(op) = op else { return };
+
+        match op {
+            0 | 1 | 2 | 3 => {}
+            4 => {
+                for mut lane in arr.lanes_mut(Axis(3)) {
+                    let mut sum_sq = T::zero();
+                    for &x in lane.iter() {
+                        sum_sq = sum_sq + x * x;
+                    }
+                    let mag = sum_sq.sqrt();
+                    lane[0] = mag;
+                }
+            }
+
+            _ => panic!("Unknown operator"),
+        }
     }
 
     fn read_tag(xml: &str, tag: &str, mesh: Option<&str>, name: Option<&str>) -> Option<Variable> {
@@ -709,9 +729,10 @@ pub mod vlsv_reader {
                 .ok()
         }
 
-        pub fn read_vg_variable_as_fg<T: bytemuck::Pod + Copy + Default>(
+        pub fn read_vg_variable_as_fg<T: Pod + Zero + Real + std::iter::Sum + Default>(
             &self,
             name: &str,
+            op: Option<i32>,
         ) -> Option<ndarray::Array4<T>> {
             let ds = self.get_dataset(name)?;
             let vecsz = ds.vectorsize;
@@ -725,12 +746,16 @@ pub mod vlsv_reader {
             let n_cells = ds.arraysize;
             let mut vg_rows = vec![T::default(); n_cells * vecsz];
             self.read_variable_into::<T>(name, Some(ds), vg_rows.as_mut_slice());
-            Some(vg_variable_to_fg(
-                &cell_ids, &vg_rows, vecsz, x0, y0, z0, lmax,
-            ))
+            let mut ordered_var = vg_variable_to_fg(&cell_ids, &vg_rows, vecsz, x0, y0, z0, lmax);
+            apply_op_in_place::<T>(&mut ordered_var, op);
+            Some(ordered_var)
         }
 
-        pub fn read_fsgrid_variable<T: Pod + Zero>(&self, name: &str) -> Option<Array4<T>> {
+        pub fn read_fsgrid_variable<T: Pod + Zero + Real + std::iter::Sum>(
+            &self,
+            name: &str,
+            op: Option<i32>,
+        ) -> Option<Array4<T>> {
             let info = self.get_dataset(name)?;
             let decomp = self.get_domain_decomposition()?;
             let ntasks = self.get_writting_tasks()?;
@@ -805,6 +830,8 @@ pub mod vlsv_reader {
                 subarray.assign(&mask);
                 current_offset += total_size;
             }
+
+            apply_op_in_place::<T>(&mut ordered_var, op);
             Some(ordered_var)
         }
 
@@ -929,40 +956,4 @@ pub mod vlsv_reader {
             Some(vdf)
         }
     }
-}
-
-#[pyfunction]
-pub fn read_vg_variable_as_fg_f32(
-    py: Python<'_>,
-    filename: &str,
-    variable: &str,
-) -> PyResult<Option<Py<PyArray4<f32>>>> {
-    let file = VlsvFile::new(filename).unwrap();
-    let arr_opt = file
-        .read_vg_variable_as_fg::<f32>(variable)
-        .unwrap()
-        .into_pyarray(py)
-        .to_owned();
-    Ok(Some(arr_opt.into()))
-}
-
-#[pyfunction]
-pub fn read_fg_variable_f32(
-    py: Python<'_>,
-    filename: &str,
-    variable: &str,
-) -> PyResult<Option<Py<PyArray4<f32>>>> {
-    let file = VlsvFile::new(filename).unwrap();
-    let arr_opt = file
-        .read_fsgrid_variable::<f32>(variable)
-        .unwrap()
-        .into_pyarray(py)
-        .to_owned();
-    Ok(Some(arr_opt.into()))
-}
-#[pymodule]
-fn vlsvrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(read_vg_variable_as_fg_f32, m)?)?;
-    m.add_function(wrap_pyfunction!(read_fg_variable_f32, m)?)?;
-    Ok(())
 }

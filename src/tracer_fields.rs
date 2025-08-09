@@ -14,6 +14,7 @@ pub mod vlsv_reader {
         + std::fmt::Debug
         + std::fmt::Display
         + num_traits::ToBytes
+        + std::iter::Sum
     {
     }
 
@@ -26,6 +27,7 @@ pub mod vlsv_reader {
             + std::fmt::Debug
             + std::fmt::Display
             + num_traits::ToBytes
+            + std::iter::Sum
     {
     }
 
@@ -61,8 +63,8 @@ pub mod vlsv_reader {
                 T::from(f.read_scalar_parameter("ymax").unwrap()).unwrap(),
                 T::from(f.read_scalar_parameter("zmax").unwrap()).unwrap(),
             ];
-            let b = f.read_fsgrid_variable::<T>("fg_b").unwrap();
-            let e = f.read_fsgrid_variable::<T>("fg_e").unwrap();
+            let b = f.read_fsgrid_variable::<T>("fg_b", None).unwrap();
+            let e = f.read_fsgrid_variable::<T>("fg_e", None).unwrap();
             let ds = (extents[3] - extents[0]) / T::from(b.dim().0).unwrap();
             VlsvStaticField { b, e, extents, ds }
         }

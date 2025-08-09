@@ -137,7 +137,8 @@ fn main() {
     // println!("vdf size = {}", vdf.len());
     // ndarray_npy::write_npy("vdf.npy", &vdf).unwrap();
     // println!("{},", f.read_scalar_parameter("time").unwrap());
-    let a = f.read_vg_variable_as_fg::<f32>("proton/vg_rho").unwrap();
+    // let a = f.read_vg_variable_as_fg::<f32>("proton/vg_rho").unwrap();
+    let a = f.read_fsgrid_variable::<f32>("fg_E", Some(2)).unwrap();
     ndarray_npy::write_npy("vg.npy", &a).unwrap();
     println!("{:?}", a.dim());
 }
