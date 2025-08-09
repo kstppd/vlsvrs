@@ -32,16 +32,28 @@ struct Args {
 }
 
 fn print_variables(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
-    print!("[");
-    for v in f.variables.iter() {
-        if v.1.arraysize.is_some() {
-            if f.get_dataset(v.0).unwrap().arraysize < 3
-                && f.get_dataset(v.0).unwrap().vectorsize < 3
-            {
-                print!("{}[{:.2?}], ", &v.0, f.read_scalar_parameter(v.0).unwrap());
-            } else {
-                print!("{}, ", &v.0);
-            }
+    let wid = f.get_wid().unwrap();
+    println!("WID: {:?}", wid);
+    println!("Max AMR level: {:?}", f.get_max_amr_refinement().unwrap());
+    println!("R-Geometry: {:?} cells", f.get_spatial_mesh_bbox().unwrap());
+    println!(
+        "V-Geometry: {:?} [blocks (WID={wid})]",
+        TryInto::<[usize; 3]>::try_into(f.get_vspace_mesh_bbox("proton").unwrap())
+            .unwrap()
+            .map(|x| x / wid)
+    );
+    println!("R-Extents: {:?} [m]", f.get_spatial_mesh_extents().unwrap());
+    println!(
+        "V-Extents: {:?} [km/s]",
+        f.get_vspace_mesh_extents("proton").unwrap()
+    );
+    print!("Contains:\n[");
+    for (name, _meta) in f.variables.iter().chain(f.parameters.iter()) {
+        let ds = f.get_dataset(name).unwrap();
+        if ds.arraysize < 3 && ds.vectorsize < 3 {
+            print!("{}[{:.2?}], ", name, f.read_scalar_parameter(name).unwrap());
+        } else {
+            print!("{}, ", name);
         }
     }
     println!("]");

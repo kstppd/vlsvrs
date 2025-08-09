@@ -577,6 +577,47 @@ pub mod vlsv_reader {
             Some((nvx, nvy, nvz))
         }
 
+        pub fn get_spatial_mesh_extents(&self) -> Option<(f64, f64, f64, f64, f64, f64)> {
+            let nodes_x = TryInto::<VlsvDataset>::try_into(
+                self.root.mesh_node_crds_x.as_ref().and_then(|meshes| {
+                    meshes
+                        .iter()
+                        .find(|v| v.mesh.as_deref() == Some("SpatialGrid"))
+                })?,
+            )
+            .ok()?;
+            let nodes_y = TryInto::<VlsvDataset>::try_into(
+                self.root.mesh_node_crds_y.as_ref().and_then(|meshes| {
+                    meshes
+                        .iter()
+                        .find(|v| v.mesh.as_deref() == Some("SpatialGrid"))
+                })?,
+            )
+            .ok()?;
+            let nodes_z = TryInto::<VlsvDataset>::try_into(
+                self.root.mesh_node_crds_z.as_ref().and_then(|meshes| {
+                    meshes
+                        .iter()
+                        .find(|v| v.mesh.as_deref() == Some("SpatialGrid"))
+                })?,
+            )
+            .ok()?;
+            assert!(nodes_x.datasize == 8, "Expected f64 for mesh node coords");
+            let mut datax: Vec<f64> = vec![0_f64; nodes_x.arraysize];
+            let mut datay: Vec<f64> = vec![0_f64; nodes_y.arraysize];
+            let mut dataz: Vec<f64> = vec![0_f64; nodes_z.arraysize];
+            self.read_variable_into::<f64>("", Some(nodes_x), &mut datax);
+            self.read_variable_into::<f64>("", Some(nodes_y), &mut datay);
+            self.read_variable_into::<f64>("", Some(nodes_z), &mut dataz);
+            Some((
+                datax.first().copied()?,
+                datay.first().copied()?,
+                dataz.first().copied()?,
+                datax.last().copied()?,
+                datay.last().copied()?,
+                dataz.last().copied()?,
+            ))
+        }
         pub fn get_vspace_mesh_extents(&self, pop: &str) -> Option<(f64, f64, f64, f64, f64, f64)> {
             let nodes_x = TryInto::<VlsvDataset>::try_into(
                 self.root
