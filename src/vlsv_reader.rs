@@ -1,4 +1,7 @@
 #[allow(dead_code)]
+use numpy::{IntoPyArray, PyArray4};
+use pyo3::prelude::*;
+use vlsv_reader::VlsvFile;
 pub mod vlsv_reader {
     use bytemuck::{Pod, cast_slice};
     use memmap2::Mmap;
@@ -926,4 +929,40 @@ pub mod vlsv_reader {
             Some(vdf)
         }
     }
+}
+
+#[pyfunction]
+pub fn read_vg_variable_as_fg_f32(
+    py: Python<'_>,
+    filename: &str,
+    variable: &str,
+) -> PyResult<Option<Py<PyArray4<f32>>>> {
+    let file = VlsvFile::new(filename).unwrap();
+    let arr_opt = file
+        .read_vg_variable_as_fg::<f32>(variable)
+        .unwrap()
+        .into_pyarray(py)
+        .to_owned();
+    Ok(Some(arr_opt.into()))
+}
+
+#[pyfunction]
+pub fn read_fg_variable_f32(
+    py: Python<'_>,
+    filename: &str,
+    variable: &str,
+) -> PyResult<Option<Py<PyArray4<f32>>>> {
+    let file = VlsvFile::new(filename).unwrap();
+    let arr_opt = file
+        .read_fsgrid_variable::<f32>(variable)
+        .unwrap()
+        .into_pyarray(py)
+        .to_owned();
+    Ok(Some(arr_opt.into()))
+}
+#[pymodule]
+fn vlsvrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(read_vg_variable_as_fg_f32, m)?)?;
+    m.add_function(wrap_pyfunction!(read_fg_variable_f32, m)?)?;
+    Ok(())
 }
