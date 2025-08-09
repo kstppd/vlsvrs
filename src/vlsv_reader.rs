@@ -510,11 +510,23 @@ pub mod vlsv_reader {
 
         fn read_variable_into<T: Sized + Pod>(
             &self,
-            name: &str,
+            name: Option<&str>,
             dataset: Option<VlsvDataset>,
             dst: &mut [T],
         ) {
-            let info = dataset.unwrap_or_else(|| self.get_dataset(name).unwrap());
+            //Sanity check
+            let info = match (name, dataset) {
+                (None, None) => {
+                    panic!("Tried to call read_variable_into with no Dataset and no Variable name")
+                }
+                (Some(_), Some(_)) => {
+                    panic!("Tried to call read_variable_into with both Name and Dataset specified ")
+                }
+                (Some(name), None) => self
+                    .get_dataset(name)
+                    .expect("No data set found for variable: {name}"),
+                (None, Some(d)) => d,
+            };
             let size = dst.len();
             let expected_bytes = info.datasize * size;
             assert!(
@@ -522,24 +534,28 @@ pub mod vlsv_reader {
                 "Attempt to read out-of-bounds from memory map"
             );
             let src_bytes = &self.memmap[info.offset..info.offset + expected_bytes];
+            let float_size = std::mem::size_of::<f32>();
+            let double_size = std::mem::size_of::<f64>();
             //We now allow mismatch of T and file data.
-            if info.datasize == 4 && std::mem::size_of::<T>() == 8 {
+            if info.datasize == float_size && std::mem::size_of::<T>() == double_size {
                 // file f32 ->  f64
                 let dst_f64: &mut [f64] = bytemuck::cast_slice_mut(dst);
                 for i in 0..dst_f64.len() {
-                    let off = i * 4;
-                    let v = f32::from_ne_bytes(src_bytes[off..off + 4].try_into().unwrap());
+                    let off = i * float_size;
+                    let v =
+                        f32::from_ne_bytes(src_bytes[off..off + float_size].try_into().unwrap());
                     dst_f64[i] = v as f64;
                 }
                 return;
             }
 
-            if info.datasize == 8 && std::mem::size_of::<T>() == 4 {
+            if info.datasize == double_size && std::mem::size_of::<T>() == float_size {
                 //file f64 -> f32
                 let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
                 for i in 0..dst_f32.len() {
-                    let off = i * 8;
-                    let v = f64::from_ne_bytes(src_bytes[off..off + 8].try_into().unwrap());
+                    let off = i * double_size;
+                    let v =
+                        f64::from_ne_bytes(src_bytes[off..off + double_size].try_into().unwrap());
                     dst_f32[i] = v as f32;
                 }
                 return;
@@ -629,9 +645,9 @@ pub mod vlsv_reader {
             let mut datax: Vec<f64> = vec![0_f64; nodes_x.arraysize];
             let mut datay: Vec<f64> = vec![0_f64; nodes_y.arraysize];
             let mut dataz: Vec<f64> = vec![0_f64; nodes_z.arraysize];
-            self.read_variable_into::<f64>("", Some(nodes_x), &mut datax);
-            self.read_variable_into::<f64>("", Some(nodes_y), &mut datay);
-            self.read_variable_into::<f64>("", Some(nodes_z), &mut dataz);
+            self.read_variable_into::<f64>(None, Some(nodes_x), &mut datax);
+            self.read_variable_into::<f64>(None, Some(nodes_y), &mut datay);
+            self.read_variable_into::<f64>(None, Some(nodes_z), &mut dataz);
             Some((
                 datax.first().copied()?,
                 datay.first().copied()?,
@@ -667,9 +683,9 @@ pub mod vlsv_reader {
             let mut datax: Vec<f64> = vec![0_f64; nodes_x.arraysize];
             let mut datay: Vec<f64> = vec![0_f64; nodes_y.arraysize];
             let mut dataz: Vec<f64> = vec![0_f64; nodes_z.arraysize];
-            self.read_variable_into::<f64>("", Some(nodes_x), &mut datax);
-            self.read_variable_into::<f64>("", Some(nodes_y), &mut datay);
-            self.read_variable_into::<f64>("", Some(nodes_z), &mut dataz);
+            self.read_variable_into::<f64>(None, Some(nodes_x), &mut datax);
+            self.read_variable_into::<f64>(None, Some(nodes_y), &mut datay);
+            self.read_variable_into::<f64>(None, Some(nodes_z), &mut dataz);
             Some((
                 datax.first().copied()?,
                 datay.first().copied()?,
@@ -689,7 +705,7 @@ pub mod vlsv_reader {
                 .and_then(|v| v.first())
                 .cloned()
                 .and_then(|v| v.try_into().ok())?;
-            self.read_variable_into::<u32>("", Some(decomposition), decomp.as_mut_slice());
+            self.read_variable_into::<u32>(None, Some(decomposition), decomp.as_mut_slice());
             Some([decomp[0] as usize, decomp[1] as usize, decomp[2] as usize])
         }
 
@@ -742,10 +758,10 @@ pub mod vlsv_reader {
             let lmax = self.get_max_amr_refinement()?;
             let cellid_ds = self.get_dataset("CellID")?;
             let mut cell_ids = vec![0u64; cellid_ds.arraysize];
-            self.read_variable_into::<u64>("CellID", Some(cellid_ds), &mut cell_ids);
+            self.read_variable_into::<u64>(Some("CellID"), Some(cellid_ds), &mut cell_ids);
             let n_cells = ds.arraysize;
             let mut vg_rows = vec![T::default(); n_cells * vecsz];
-            self.read_variable_into::<T>(name, Some(ds), vg_rows.as_mut_slice());
+            self.read_variable_into::<T>(Some(name), Some(ds), vg_rows.as_mut_slice());
             let mut ordered_var = vg_variable_to_fg(&cell_ids, &vg_rows, vecsz, x0, y0, z0, lmax);
             apply_op_in_place::<T>(&mut ordered_var, op);
             Some(ordered_var)
@@ -782,7 +798,7 @@ pub mod vlsv_reader {
             }
 
             let mut var = ndarray::Array2::<T>::zeros((nx * ny * nz, info.vectorsize));
-            self.read_variable_into::<T>(name, None, var.as_slice_mut().unwrap());
+            self.read_variable_into::<T>(Some(name), None, var.as_slice_mut().unwrap());
             let bbox = [nx, ny, nz];
             let mut ordered_var = Array4::<T>::zeros((nx, ny, nz, info.vectorsize));
             let mut current_offset = 0;
@@ -894,8 +910,8 @@ pub mod vlsv_reader {
 
             let mut cids_with_blocks: Vec<usize> = vec![0; cellswithblocks.arraysize];
             let mut blocks_per_cell: Vec<u32> = vec![0; blockspercell.arraysize];
-            self.read_variable_into::<usize>("", Some(cellswithblocks), &mut cids_with_blocks);
-            self.read_variable_into::<u32>("", Some(blockspercell), &mut blocks_per_cell);
+            self.read_variable_into::<usize>(None, Some(cellswithblocks), &mut cids_with_blocks);
+            self.read_variable_into::<u32>(None, Some(blockspercell), &mut blocks_per_cell);
 
             let index = cids_with_blocks.iter().position(|v| *v == cid)?;
             let read_size = blocks_per_cell[index] as usize;
