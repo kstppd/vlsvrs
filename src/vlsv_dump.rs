@@ -55,7 +55,6 @@ fn print_config(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
 
 fn print_version(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
     println!("{},", f.read_version().expect("Version not found"));
-    println!("{},", f.read_scalar_parameter("time").unwrap());
     Ok(())
 }
 

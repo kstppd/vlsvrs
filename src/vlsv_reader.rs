@@ -1,12 +1,10 @@
-use ndarray::{Array2, Array3, Array4};
-use vlsv_reader::VlsvFile;
-
 #[allow(dead_code)]
 pub mod vlsv_reader {
     use bytemuck::{Pod, cast_slice};
     use memmap2::Mmap;
     use ndarray::{Array3, Array4, Order, s};
     use num_traits::{self, Zero};
+    use regex::Regex;
     use serde::Deserialize;
     use std::collections::HashMap;
 
@@ -97,6 +95,75 @@ pub mod vlsv_reader {
         pub vectorsize: usize,
         pub datasize: usize,
         pub datatype: String,
+    }
+
+    fn read_tag(xml: &str, tag: &str, mesh: Option<&str>, name: Option<&str>) -> Option<Variable> {
+        let re_normal = Regex::new(&format!(
+            r#"(?s)<{t}\b([^>]*)>([^<]*)</{t}>"#,
+            t = regex::escape(tag)
+        ))
+        .unwrap();
+        let re_self =
+            Regex::new(&format!(r#"(?s)<{t}\b([^>]*)/>"#, t = regex::escape(tag))).unwrap();
+        let re_attr = Regex::new(r#"(\w+)\s*=\s*"([^"]*)""#).unwrap();
+        let parse_match = |attrs_str: &str, inner_text: Option<&str>| -> Option<Variable> {
+            let mut attrs: HashMap<&str, &str> = HashMap::new();
+            for cap in re_attr.captures_iter(attrs_str) {
+                let k = cap.get(1).unwrap().as_str();
+                let v = cap.get(2).unwrap().as_str();
+                attrs.insert(k, v);
+            }
+
+            if let Some(m) = mesh {
+                if attrs.get("mesh").copied() != Some(m) {
+                    return None;
+                }
+            }
+            if let Some(n) = name {
+                if attrs.get("name").copied() != Some(n) {
+                    return None;
+                }
+            }
+
+            let arraysize = attrs.get("arraysize").map(|s| s.to_string());
+            let datasize = attrs.get("datasize").map(|s| s.to_string());
+            let datatype = attrs.get("datatype").map(|s| s.to_string());
+            let mesh_str = attrs.get("mesh").map(|s| s.to_string());
+            let name_str = attrs.get("name").map(|s| s.to_string());
+            let vectorsize = attrs.get("vectorsize").map(|s| s.to_string());
+            let max_refinement_level = attrs.get("max_refinement_level").map(|s| s.to_string());
+            let offset = inner_text.map(|s| s.trim().to_string());
+
+            Some(Variable {
+                arraysize,
+                datasize,
+                datatype,
+                mesh: mesh_str,
+                name: name_str.or_else(|| Some(tag.to_string())),
+                vectorsize,
+                max_refinement_level,
+                unit: attrs.get("unit").map(|s| s.to_string()),
+                unit_conversion: attrs.get("unitConversion").map(|s| s.to_string()),
+                unit_latex: attrs.get("unitLaTeX").map(|s| s.to_string()),
+                variable_latex: attrs.get("variableLaTeX").map(|s| s.to_string()),
+                offset,
+            })
+        };
+        for caps in re_normal.captures_iter(xml) {
+            let attrs_str = caps.get(1).unwrap().as_str();
+            let text = caps.get(2).map(|m| m.as_str());
+            if let Some(v) = parse_match(attrs_str, text) {
+                return Some(v);
+            }
+        }
+
+        for caps in re_self.captures_iter(xml) {
+            let attrs_str = caps.get(1).unwrap().as_str();
+            if let Some(v) = parse_match(attrs_str, None) {
+                return Some(v);
+            }
+        }
+        None
     }
 
     fn cid2ijk(cid: u64, nx: usize, ny: usize) -> (usize, usize, usize) {
@@ -299,17 +366,29 @@ pub mod vlsv_reader {
         pub fn new(filename: &str) -> Result<Self, Box<dyn std::error::Error>> {
             let f = std::fs::File::open(filename)?;
             let mmap = unsafe { Mmap::map(&f)? };
-
             let footer_offset = i64::from_ne_bytes(mmap[8..16].try_into()?) as usize;
             let xml_string = std::str::from_utf8(&mmap[footer_offset..])?.to_string();
 
             let root: VlsvRoot = serde_xml_rs::from_str(&xml_string)?;
 
-            let vars = root
+            let mut vars = root
                 .variables
                 .iter()
                 .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
                 .collect::<HashMap<_, _>>();
+
+            let version: Option<Variable> =
+                read_tag(&xml_string, "VERSION", None, Some("version_information"));
+
+            let config: Option<Variable> =
+                read_tag(&xml_string, "CONFIG", None, Some("config_file"));
+
+            if let Some(x) = config {
+                vars.insert(x.name.clone().unwrap(), x);
+            }
+            if let Some(x) = version {
+                vars.insert(x.name.clone().unwrap(), x);
+            }
 
             let params = root
                 .parameters
@@ -373,7 +452,7 @@ pub mod vlsv_reader {
         pub fn read_config(&self) -> Option<String> {
             let name = "config_file";
             let info = self.get_dataset(name)?;
-            let expected_bytes = info.datasize * info.vectorsize;
+            let expected_bytes = info.datasize * info.vectorsize * info.arraysize;
             assert!(
                 info.offset + expected_bytes <= self.memmap.len(),
                 "Attempt to read out-of-bounds from memory map"
@@ -391,7 +470,7 @@ pub mod vlsv_reader {
         pub fn read_version(&self) -> Option<String> {
             let name = "version_information";
             let info = self.get_dataset(name)?;
-            let expected_bytes = info.datasize * info.vectorsize;
+            let expected_bytes = info.datasize * info.vectorsize * info.arraysize;
             assert!(
                 info.offset + expected_bytes <= self.memmap.len(),
                 "Attempt to read out-of-bounds from memory map"
