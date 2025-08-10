@@ -41,3 +41,15 @@ crate-type = ["staticlib", "cdylib"]
 [features]
 default = []
 with_bindings = []
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+debug = 0
+debug-assertions = false
+overflow-checks = false
+incremental = false
+rpath = false
