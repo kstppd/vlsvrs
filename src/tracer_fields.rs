@@ -2,7 +2,7 @@ pub mod vlsv_reader {
     use crate::vlsv_reader;
     use bytemuck::Pod;
     use ndarray::{Array4, s};
-    use num_traits::Float;
+    use num_traits::{Float, Num, NumCast};
     use vlsv_reader::vlsv_reader::VlsvFile;
 
     pub trait PtrTrait:
@@ -15,6 +15,10 @@ pub mod vlsv_reader {
         + std::fmt::Display
         + num_traits::ToBytes
         + std::iter::Sum
+        + vlsv_reader::vlsv_reader::TypeTag
+        + std::default::Default
+        + Num
+        + NumCast
     {
     }
 
@@ -27,7 +31,11 @@ pub mod vlsv_reader {
             + std::fmt::Debug
             + std::fmt::Display
             + num_traits::ToBytes
+            + std::default::Default
             + std::iter::Sum
+            + vlsv_reader::vlsv_reader::TypeTag
+            + Num
+            + NumCast
     {
     }
 

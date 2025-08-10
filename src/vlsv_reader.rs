@@ -1,9 +1,10 @@
 #[allow(dead_code)]
 pub mod vlsv_reader {
     use bytemuck::{Pod, cast_slice};
+    use core::convert::TryInto;
     use memmap2::Mmap;
     use ndarray::{Array3, Array4, Axis, Order, s};
-    use num_traits::{Zero, real::Real};
+    use num_traits::{Num, NumCast, Zero};
     use regex::Regex;
     use serde::Deserialize;
     use std::collections::HashMap;
@@ -97,9 +98,36 @@ pub mod vlsv_reader {
         pub datatype: String,
     }
 
+    pub trait TypeTag {
+        fn type_name() -> &'static str;
+    }
+
+    macro_rules! impl_prim_meta {
+        ( $( $t:ty => $tag:expr ),* $(,)? ) => {
+            $(
+                impl TypeTag for $t {
+                    fn type_name() -> &'static str { $tag }
+                }
+
+            )*
+        };
+    }
+
+    //Vlasiator vlsv naming convention
+    impl_prim_meta! {
+        f32   => "float",
+        f64   => "float",
+        u32   => "uint",
+        i32   => "int",
+        u64   => "uint",
+        i64   => "int",
+        u8    => "u8",
+        usize => "uint",
+    }
+
     pub fn apply_op_in_place<T>(arr: &mut Array4<T>, op: Option<i32>)
     where
-        T: Pod + Zero + Real + std::iter::Sum,
+        T: Num + NumCast + Copy + Pod,
     {
         let Some(op) = op else { return };
 
@@ -107,15 +135,21 @@ pub mod vlsv_reader {
             0 | 1 | 2 | 3 => {}
             4 => {
                 for mut lane in arr.lanes_mut(Axis(3)) {
-                    let mut sum_sq = T::zero();
-                    for &x in lane.iter() {
-                        sum_sq = sum_sq + x * x;
-                    }
-                    let mag = sum_sq.sqrt();
-                    lane[0] = mag;
+                    // compute in f64 for safety
+                    let sum_sq: f64 = lane
+                        .iter()
+                        .map(|&x| {
+                            let xf: f64 = NumCast::from(x).unwrap();
+                            xf * xf
+                        })
+                        .sum();
+
+                    let mag_f64 = sum_sq.sqrt();
+
+                    // cast back to T
+                    lane[0] = NumCast::from(mag_f64).unwrap();
                 }
             }
-
             _ => panic!("Unknown operator"),
         }
     }
@@ -508,7 +542,7 @@ pub mod vlsv_reader {
             Some(cfgfile)
         }
 
-        fn read_variable_into<T: Sized + Pod>(
+        fn read_variable_into<T: Sized + Pod + TypeTag>(
             &self,
             name: Option<&str>,
             dataset: Option<VlsvDataset>,
@@ -527,49 +561,65 @@ pub mod vlsv_reader {
                     .expect("No data set found for variable: {name}"),
                 (None, Some(d)) => d,
             };
-            let size = dst.len();
-            let expected_bytes = info.datasize * size;
-            assert!(
-                info.offset + expected_bytes <= self.memmap.len(),
-                "Attempt to read out-of-bounds from memory map"
-            );
-            let src_bytes = &self.memmap[info.offset..info.offset + expected_bytes];
-            let float_size = std::mem::size_of::<f32>();
-            let double_size = std::mem::size_of::<f64>();
-            //We now allow mismatch of T and file data.
-            if info.datasize == float_size && std::mem::size_of::<T>() == double_size {
-                // file f32 ->  f64
-                let dst_f64: &mut [f64] = bytemuck::cast_slice_mut(dst);
-                for i in 0..dst_f64.len() {
-                    let off = i * float_size;
-                    let v =
-                        f32::from_ne_bytes(src_bytes[off..off + float_size].try_into().unwrap());
-                    dst_f64[i] = v as f64;
-                }
-                return;
-            }
+            let expected_bytes = info.datasize * info.arraysize * info.vectorsize;
+            let end = info.offset + expected_bytes;
+            let src_bytes = &self.memmap[info.offset..end];
+            let dst_bytes = bytemuck::cast_slice_mut::<T, u8>(dst);
 
-            if info.datasize == double_size && std::mem::size_of::<T>() == float_size {
-                //file f64 -> f32
-                let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
-                for i in 0..dst_f32.len() {
-                    let off = i * double_size;
-                    let v =
-                        f64::from_ne_bytes(src_bytes[off..off + double_size].try_into().unwrap());
-                    dst_f32[i] = v as f32;
-                }
-                return;
-            }
-
-            if info.datasize == std::mem::size_of::<T>() {
-                let dst_bytes = bytemuck::cast_slice_mut::<T, u8>(dst);
+            /*
+               === DYNAMIC DISPATCH RULES ===
+               Floating point conversions ONLY!!!
+               Not doing any int conversions becasue the user can just read the correct type.
+               For floats it makes sense as we may need to read f64 fields as f32 for memory savings.
+            */
+            let type_on_disk = info.datatype;
+            let type_of_t = T::type_name();
+            //T=>T
+            if type_on_disk == type_of_t && info.datasize == std::mem::size_of::<T>() {
                 dst_bytes.copy_from_slice(src_bytes);
                 return;
             }
+            unsafe {
+                //f32=>f64
+                if type_on_disk == "float"
+                    && info.datasize == 4
+                    && type_of_t == "float"
+                    && std::mem::size_of::<T>() == 8
+                {
+                    let dst_f64: &mut [f64] =
+                        std::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<f64>(), dst.len());
 
-            panic!("Unhandled datasize/element-size combination");
+                    for (i, bytes) in src_bytes.chunks_exact(4).enumerate() {
+                        let v64 = f32::from_le_bytes(bytes.try_into().unwrap()) as f64;
+                        dst_f64[i] = v64;
+                    }
+                    return;
+                }
+                //f64=>f32
+                if type_on_disk == "float"
+                    && info.datasize == 8
+                    && std::mem::size_of::<T>() == 4
+                    && type_of_t == "float"
+                {
+                    let dst_f32: &mut [f32] =
+                        std::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<f32>(), dst.len());
+
+                    for (i, bytes) in src_bytes.chunks_exact(8).enumerate() {
+                        let v32 = f64::from_le_bytes(bytes.try_into().unwrap()) as f32;
+                        dst_f32[i] = v32;
+                    }
+                    return;
+                }
+            }
+            //Any other mismatch panics!
+            panic!(
+                "Incompatible reads: {type_on_disk}({}) => {type_of_t}({}) ",
+                info.datasize,
+                std::mem::size_of::<T>()
+            );
         }
 
+        // #[deprecated(note = "TODO: This reads WID from the first population file. Reconsider!")]
         pub fn get_wid(&self) -> Option<usize> {
             let wid = {
                 let dataset: VlsvDataset =
@@ -697,7 +747,7 @@ pub mod vlsv_reader {
         }
 
         pub fn get_domain_decomposition(&self) -> Option<[usize; 3]> {
-            let mut decomp: [u32; 3] = [0; 3];
+            let mut decomp: [i32; 3] = [0; 3];
             let decomposition: VlsvDataset = self
                 .root
                 .mesh_decomposition
@@ -705,7 +755,7 @@ pub mod vlsv_reader {
                 .and_then(|v| v.first())
                 .cloned()
                 .and_then(|v| v.try_into().ok())?;
-            self.read_variable_into::<u32>(None, Some(decomposition), decomp.as_mut_slice());
+            self.read_variable_into::<i32>(None, Some(decomposition), decomp.as_mut_slice());
             Some([decomp[0] as usize, decomp[1] as usize, decomp[2] as usize])
         }
 
@@ -745,7 +795,9 @@ pub mod vlsv_reader {
                 .ok()
         }
 
-        pub fn read_vg_variable_as_fg<T: Pod + Zero + Real + std::iter::Sum + Default>(
+        pub fn read_vg_variable_as_fg<
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+        >(
             &self,
             name: &str,
             op: Option<i32>,
@@ -758,16 +810,18 @@ pub mod vlsv_reader {
             let lmax = self.get_max_amr_refinement()?;
             let cellid_ds = self.get_dataset("CellID")?;
             let mut cell_ids = vec![0u64; cellid_ds.arraysize];
-            self.read_variable_into::<u64>(Some("CellID"), Some(cellid_ds), &mut cell_ids);
+            self.read_variable_into::<u64>(None, Some(cellid_ds), &mut cell_ids);
             let n_cells = ds.arraysize;
             let mut vg_rows = vec![T::default(); n_cells * vecsz];
-            self.read_variable_into::<T>(Some(name), Some(ds), vg_rows.as_mut_slice());
+            self.read_variable_into::<T>(None, Some(ds), vg_rows.as_mut_slice());
             let mut ordered_var = vg_variable_to_fg(&cell_ids, &vg_rows, vecsz, x0, y0, z0, lmax);
             apply_op_in_place::<T>(&mut ordered_var, op);
             Some(ordered_var)
         }
 
-        pub fn read_fsgrid_variable<T: Pod + Zero + Real + std::iter::Sum>(
+        pub fn read_fsgrid_variable<
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+        >(
             &self,
             name: &str,
             op: Option<i32>,
@@ -971,5 +1025,25 @@ pub mod vlsv_reader {
             }
             Some(vdf)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test() {
+        // let f = vlsv_reader::VlsvFile::new("assets/bulk1.0001299.vlsv").unwrap();
+        // let f = vlsv_reader::VlsvFile::new("/home/kstppd/backups/kstppd/tsi.vlsv").unwrap();
+        let f = vlsv_reader::VlsvFile::new(
+            "/home/kstppd/backups/kstppd/Desktop/bulk_with_fg_10.0000109.vlsv",
+        )
+        .unwrap();
+        // let a = f.read_vdf(256, "proton").unwrap();
+        let a = f.read_fsgrid_variable::<f64>("fg_b_vol", None).unwrap();
+        // println!("{}", a[(100, 100, 100, 0)]);
+        // let _ = f.read_vg_variable_as_fg::<f64>("proton/vg_energydensity", None);
+        // f.print_variables();
     }
 }
