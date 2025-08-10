@@ -616,6 +616,117 @@ pub mod vlsv_reader {
             Some(vdf)
         }
 
+        pub fn read_vdf_into<T>(
+            &self,
+            cid: usize,
+            pop: &str,
+            target: &mut Array4<T>,
+            target_extent: (f64, f64, f64, f64, f64, f64),
+        ) -> Option<()>
+        where
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+        {
+            let vdf: Array4<T> = self.read_vdf::<T>(cid, pop)?;
+            let (sx, sy, sz, sc) = vdf.dim();
+            let (tx, ty, tz, tc) = target.dim();
+            assert!(sc == 1 && tc == 1);
+            let (sxmin, symin, szmin, sxmax, symax, szmax) = self.get_vspace_mesh_extents(pop)?;
+            let (txmin, tymin, tzmin, txmax, tymax, tzmax) = target_extent;
+
+            let sdx = (sxmax - sxmin) / (sx as f64);
+            let sdy = (symax - symin) / (sy as f64);
+            let sdz = (szmax - szmin) / (sz as f64);
+            let tdx = (txmax - txmin) / (tx as f64);
+            let tdy = (tymax - tymin) / (ty as f64);
+            let tdz = (tzmax - tzmin) / (tz as f64);
+
+            let in_bounds = |i: isize, n: usize| i >= 0 && (i as usize) < n;
+            let tri_sample = |ux: f64, uy: f64, uz: f64, chan: usize| -> f64 {
+                let ix0 = ux.floor() as isize;
+                let iy0 = uy.floor() as isize;
+                let iz0 = uz.floor() as isize;
+                let fx = ux - ix0 as f64;
+                let fy = uy - iy0 as f64;
+                let fz = uz - iz0 as f64;
+                if !(in_bounds(ix0, sx)
+                    && in_bounds(ix0 + 1, sx)
+                    && in_bounds(iy0, sy)
+                    && in_bounds(iy0 + 1, sy)
+                    && in_bounds(iz0, sz)
+                    && in_bounds(iz0 + 1, sz))
+                {
+                    return 0.0;
+                }
+
+                let fetch = |i, j, k| -> f64 { NumCast::from(vdf[(i, j, k, chan)]).unwrap_or(0.0) };
+                let c000 = fetch(ix0 as usize, iy0 as usize, iz0 as usize);
+                let c100 = fetch((ix0 + 1) as usize, iy0 as usize, iz0 as usize);
+                let c010 = fetch(ix0 as usize, (iy0 + 1) as usize, iz0 as usize);
+                let c110 = fetch((ix0 + 1) as usize, (iy0 + 1) as usize, iz0 as usize);
+                let c001 = fetch(ix0 as usize, iy0 as usize, (iz0 + 1) as usize);
+                let c101 = fetch((ix0 + 1) as usize, iy0 as usize, (iz0 + 1) as usize);
+                let c011 = fetch(ix0 as usize, (iy0 + 1) as usize, (iz0 + 1) as usize);
+                let c111 = fetch((ix0 + 1) as usize, (iy0 + 1) as usize, (iz0 + 1) as usize);
+                let c00 = c000 * (1.0 - fx) + c100 * fx;
+                let c01 = c001 * (1.0 - fx) + c101 * fx;
+                let c10 = c010 * (1.0 - fx) + c110 * fx;
+                let c11 = c011 * (1.0 - fx) + c111 * fx;
+                let c0 = c00 * (1.0 - fy) + c10 * fy;
+                let c1 = c01 * (1.0 - fy) + c11 * fy;
+
+                c0 * (1.0 - fz) + c1 * fz
+            };
+
+            let to_src_u = |x_t: f64, xmin_s: f64, sdx: f64| -> f64 { (x_t - xmin_s) / sdx - 0.5 };
+
+            let c_use = sc.min(tc);
+            target.fill(T::zero());
+
+            for iz in 0..tz {
+                let zc = tzmin + (iz as f64 + 0.5) * tdz;
+                let uz = to_src_u(zc, szmin, sdz);
+
+                for iy in 0..ty {
+                    let yc = tymin + (iy as f64 + 0.5) * tdy;
+                    let uy = to_src_u(yc, symin, sdy);
+
+                    for ix in 0..tx {
+                        let xc = txmin + (ix as f64 + 0.5) * tdx;
+                        let ux = to_src_u(xc, sxmin, sdx);
+
+                        let mut total_value = 0.0;
+                        let mut count = 0;
+
+                        for iz_src in (ux.floor() as isize)..=(ux.ceil() as isize) {
+                            for iy_src in (uy.floor() as isize)..=(uy.ceil() as isize) {
+                                for ix_src in (uz.floor() as isize)..=(uz.ceil() as isize) {
+                                    if in_bounds(ix_src, sx)
+                                        && in_bounds(iy_src, sy)
+                                        && in_bounds(iz_src, sz)
+                                    {
+                                        total_value += tri_sample(ux, uy, uz, 0);
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+
+                        let average_value = if count > 0 {
+                            T::from(total_value).unwrap() / T::from(count).unwrap()
+                        } else {
+                            T::zero()
+                        };
+
+                        for c in 0..c_use {
+                            target[(ix, iy, iz, c)] = average_value;
+                        }
+                    }
+                }
+            }
+
+            Some(())
+        }
+
         pub fn read_variable<T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag>(
             &self,
             name: &str,
@@ -1050,23 +1161,3 @@ pub mod vlsv_reader {
         usize => "uint",
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn test() {
-//         // let f = vlsv_reader::VlsvFile::new("assets/bulk1.0001299.vlsv").unwrap();
-//         // let f = vlsv_reader::VlsvFile::new("/home/kstppd/backups/kstppd/tsi.vlsv").unwrap();
-//         // let f = vlsv_reader::VlsvFile::new(
-//         //     "/home/kstppd/backups/kstppd/Desktop/bulk_with_fg_10.0000109.vlsv",
-//         // )
-//         .unwrap();
-//         // let a = f.read_vdf(256, "proton").unwrap();
-//         let a = f.read_fsgrid_variable::<f64>("fg_b_vol", None).unwrap();
-//         // println!("{}", a[(100, 100, 100, 0)]);
-//         // let _ = f.read_vg_variable_as_fg::<f64>("proton/vg_energydensity", None);
-//         // f.print_variables();
-//     }
-// }

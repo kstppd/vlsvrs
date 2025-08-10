@@ -5,27 +5,27 @@ use numpy::{IntoPyArray, PyArray4};
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
-use std::ffi::{CStr, c_void};
+use std::ffi::CStr;
 use std::os::raw::c_char;
 extern crate libc;
 use crate::pyfunction;
 
 /************************* C Bindings *********************************/
-#[unsafe(export_name = "read_vg_as_fg_32")]
-pub unsafe fn read_vg_as_fg_32(
+#[unsafe(export_name = "read_var_32")]
+pub unsafe fn read_var_32(
     filename: *const c_char,
     varname: *const c_char,
     nx: *mut usize,
     ny: *mut usize,
     nz: *mut usize,
     nc: *mut usize,
+    op: i32,
 ) -> *mut f32 {
     let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
     let var = unsafe { CStr::from_ptr(varname).to_str().unwrap() };
-    println!("Reading in {} from {}", name, var);
     let var: Array4<f32> = VlsvFile::new(name)
         .unwrap()
-        .read_vg_variable_as_fg::<f32>(var, None)
+        .read_variable::<f32>(var, Some(op))
         .unwrap();
     unsafe {
         (*nx, *ny, *nz, *nc) = var.dim();
@@ -36,21 +36,21 @@ pub unsafe fn read_vg_as_fg_32(
     ptr
 }
 
-#[unsafe(export_name = "read_vg_as_fg_64")]
-pub unsafe fn read_vg_as_fg_64(
+#[unsafe(export_name = "read_var_64")]
+pub unsafe fn read_var_64(
     filename: *const c_char,
     varname: *const c_char,
     nx: *mut usize,
     ny: *mut usize,
     nz: *mut usize,
     nc: *mut usize,
+    op: i32,
 ) -> *mut f64 {
     let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
     let var = unsafe { CStr::from_ptr(varname).to_str().unwrap() };
-    println!("Reading in {} from {}", name, var);
     let var: Array4<f64> = VlsvFile::new(name)
         .unwrap()
-        .read_vg_variable_as_fg::<f64>(var, None)
+        .read_variable::<f64>(var, Some(op))
         .unwrap();
     unsafe {
         (*nx, *ny, *nz, *nc) = var.dim();
@@ -60,54 +60,7 @@ pub unsafe fn read_vg_as_fg_64(
     std::mem::forget(vec);
     ptr
 }
-#[unsafe(export_name = "read_fg_32")]
-pub unsafe fn read_fg_32(
-    filename: *const c_char,
-    varname: *const c_char,
-    nx: *mut usize,
-    ny: *mut usize,
-    nz: *mut usize,
-    nc: *mut usize,
-) -> *mut f32 {
-    let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
-    let var = unsafe { CStr::from_ptr(varname).to_str().unwrap() };
-    println!("Reading in {} from {}", name, var);
-    let var: Array4<f32> = VlsvFile::new(name)
-        .unwrap()
-        .read_fsgrid_variable::<f32>(var, None)
-        .unwrap();
-    unsafe {
-        (*nx, *ny, *nz, *nc) = var.dim();
-    }
-    let mut vec = var.into_raw_vec_and_offset().0;
-    let ptr = vec.as_mut_ptr();
-    std::mem::forget(vec);
-    ptr
-}
-#[unsafe(export_name = "read_fg_64")]
-pub unsafe fn read_fg_64(
-    filename: *const c_char,
-    varname: *const c_char,
-    nx: *mut usize,
-    ny: *mut usize,
-    nz: *mut usize,
-    nc: *mut usize,
-) -> *mut f64 {
-    let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
-    let var = unsafe { CStr::from_ptr(varname).to_str().unwrap() };
-    println!("Reading in {} from {}", name, var);
-    let var: Array4<f64> = VlsvFile::new(name)
-        .unwrap()
-        .read_fsgrid_variable::<f64>(var, None)
-        .unwrap();
-    unsafe {
-        (*nx, *ny, *nz, *nc) = var.dim();
-    }
-    let mut vec = var.into_raw_vec_and_offset().0;
-    let ptr = vec.as_mut_ptr();
-    std::mem::forget(vec);
-    ptr
-}
+
 #[unsafe(export_name = "read_vdf_32")]
 pub unsafe fn read_vdf_32(
     filename: *const c_char,
@@ -119,7 +72,10 @@ pub unsafe fn read_vdf_32(
 ) -> *mut f32 {
     let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
     let pop = unsafe { CStr::from_ptr(pop).to_str().unwrap() };
-    let var: Array4<f32> = VlsvFile::new(name).unwrap().read_vdf(cid, pop).unwrap();
+    let var: Array4<f32> = VlsvFile::new(name)
+        .unwrap()
+        .read_vdf::<f32>(cid, pop)
+        .unwrap();
     unsafe {
         (*nx, *ny, *nz, _) = var.dim();
     }
@@ -129,9 +85,28 @@ pub unsafe fn read_vdf_32(
     ptr
 }
 
-#[unsafe(export_name = "vlsvreader_free")]
-pub unsafe fn vlsvreader_free(ptr: *mut f32) {
-    unsafe { libc::free(ptr.cast::<c_void>()) };
+#[unsafe(export_name = "read_vdf_64")]
+pub unsafe fn read_vdf_64(
+    filename: *const c_char,
+    pop: *const c_char,
+    cid: usize,
+    nx: *mut usize,
+    ny: *mut usize,
+    nz: *mut usize,
+) -> *mut f64 {
+    let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
+    let pop = unsafe { CStr::from_ptr(pop).to_str().unwrap() };
+    let var: Array4<f64> = VlsvFile::new(name)
+        .unwrap()
+        .read_vdf::<f64>(cid, pop)
+        .unwrap();
+    unsafe {
+        (*nx, *ny, *nz, _) = var.dim();
+    }
+    let mut vec = var.into_raw_vec_and_offset().0;
+    let ptr = vec.as_mut_ptr();
+    std::mem::forget(vec);
+    ptr
 }
 
 //********************* Python Bindings **************************
@@ -185,53 +160,27 @@ impl PyVlsvFile {
         self.inner.get_vspace_mesh_bbox(pop)
     }
 
-    fn read_fg_variable_f32<'py>(
+    fn read_variable_f32<'py>(
         &self,
         py: Python<'py>,
         variable: &str,
         op: Option<i32>,
     ) -> PyResult<Py<PyArray4<f32>>> {
         let arr: Array4<f32> = map_opt(
-            self.inner.read_fsgrid_variable::<f32>(variable, op),
+            self.inner.read_variable::<f32>(variable, op),
             format!("variable '{}' not found", variable),
         )?;
         Ok(arr.into_pyarray(py).to_owned().into())
     }
 
-    fn read_fg_variable_f64<'py>(
+    fn read_variable_f64<'py>(
         &self,
         py: Python<'py>,
         variable: &str,
         op: Option<i32>,
     ) -> PyResult<Py<PyArray4<f64>>> {
         let arr: Array4<f64> = map_opt(
-            self.inner.read_fsgrid_variable::<f64>(variable, op),
-            format!("variable '{}' not found", variable),
-        )?;
-        Ok(arr.into_pyarray(py).to_owned().into())
-    }
-
-    fn read_vg_variable_as_fg_f32<'py>(
-        &self,
-        py: Python<'py>,
-        variable: &str,
-        op: Option<i32>,
-    ) -> PyResult<Py<PyArray4<f32>>> {
-        let arr: Array4<f32> = map_opt(
-            self.inner.read_vg_variable_as_fg::<f32>(variable, op),
-            format!("variable '{}' not found", variable),
-        )?;
-        Ok(arr.into_pyarray(py).to_owned().into())
-    }
-
-    fn read_vg_variable_as_fg_f64<'py>(
-        &self,
-        py: Python<'py>,
-        variable: &str,
-        op: Option<i32>,
-    ) -> PyResult<Py<PyArray4<f64>>> {
-        let arr: Array4<f64> = map_opt(
-            self.inner.read_vg_variable_as_fg::<f64>(variable, op),
+            self.inner.read_variable::<f64>(variable, op),
             format!("variable '{}' not found", variable),
         )?;
         Ok(arr.into_pyarray(py).to_owned().into())
@@ -244,7 +193,20 @@ impl PyVlsvFile {
         pop: &str,
     ) -> PyResult<Py<PyArray4<f32>>> {
         let arr: Array4<f32> = map_opt(
-            self.inner.read_vdf(cid, pop),
+            self.inner.read_vdf::<f32>(cid, pop),
+            format!("VDF not found for cid={} pop='{}'", cid, pop),
+        )?;
+        Ok(arr.into_pyarray(py).to_owned().into())
+    }
+
+    fn read_vdf_f64<'py>(
+        &self,
+        py: Python<'py>,
+        cid: usize,
+        pop: &str,
+    ) -> PyResult<Py<PyArray4<f64>>> {
+        let arr: Array4<f64> = map_opt(
+            self.inner.read_vdf::<f64>(cid, pop),
             format!("VDF not found for cid={} pop='{}'", cid, pop),
         )?;
         Ok(arr.into_pyarray(py).to_owned().into())
@@ -252,23 +214,7 @@ impl PyVlsvFile {
 }
 
 #[pyfunction]
-fn read_fg_variable_f32(
-    py: Python<'_>,
-    filename: &str,
-    variable: &str,
-    op: Option<i32>,
-) -> PyResult<Py<PyArray4<f32>>> {
-    let f = VlsvFile::new(filename)
-        .map_err(|e| PyIOError::new_err(format!("open '{}': {}", filename, e)))?;
-    let arr = map_opt(
-        f.read_fsgrid_variable::<f32>(variable, op),
-        format!("variable '{}' not found", variable),
-    )?;
-    Ok(arr.into_pyarray(py).to_owned().into())
-}
-
-#[pyfunction]
-fn read_fg_variable_f64(
+fn read_variable_f64(
     py: Python<'_>,
     filename: &str,
     variable: &str,
@@ -284,7 +230,7 @@ fn read_fg_variable_f64(
 }
 
 #[pyfunction]
-fn read_vg_variable_as_fg_f32(
+fn read_variable_f32(
     py: Python<'_>,
     filename: &str,
     variable: &str,
@@ -293,23 +239,7 @@ fn read_vg_variable_as_fg_f32(
     let f = VlsvFile::new(filename)
         .map_err(|e| PyIOError::new_err(format!("open '{}': {}", filename, e)))?;
     let arr = map_opt(
-        f.read_vg_variable_as_fg::<f32>(variable, op),
-        format!("variable '{}' not found", variable),
-    )?;
-    Ok(arr.into_pyarray(py).to_owned().into())
-}
-
-#[pyfunction]
-fn read_vg_variable_as_fg_f64(
-    py: Python<'_>,
-    filename: &str,
-    variable: &str,
-    op: Option<i32>,
-) -> PyResult<Py<PyArray4<f64>>> {
-    let f = VlsvFile::new(filename)
-        .map_err(|e| PyIOError::new_err(format!("open '{}': {}", filename, e)))?;
-    let arr = map_opt(
-        f.read_vg_variable_as_fg::<f64>(variable, op),
+        f.read_fsgrid_variable::<f32>(variable, op),
         format!("variable '{}' not found", variable),
     )?;
     Ok(arr.into_pyarray(py).to_owned().into())
@@ -331,15 +261,29 @@ fn read_vdf_f32(
     Ok(arr.into_pyarray(py).to_owned().into())
 }
 
-// // -------------------- module --------------------
+#[pyfunction]
+fn read_vdf_f64(
+    py: Python<'_>,
+    filename: &str,
+    cid: usize,
+    pop: &str,
+) -> PyResult<Py<PyArray4<f64>>> {
+    let f = VlsvFile::new(filename)
+        .map_err(|e| PyIOError::new_err(format!("open '{}': {}", filename, e)))?;
+    let arr = map_opt(
+        f.read_vdf(cid, pop),
+        format!("VDF not found for cid={} pop='{}'", cid, pop),
+    )?;
+    Ok(arr.into_pyarray(py).to_owned().into())
+}
 
+// -------------------- module --------------------
 #[pymodule]
 fn vlsvrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyVlsvFile>()?;
-    m.add_function(wrap_pyfunction!(read_fg_variable_f32, m)?)?;
-    m.add_function(wrap_pyfunction!(read_fg_variable_f64, m)?)?;
-    m.add_function(wrap_pyfunction!(read_vg_variable_as_fg_f32, m)?)?;
-    m.add_function(wrap_pyfunction!(read_vg_variable_as_fg_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(read_variable_f32, m)?)?;
+    m.add_function(wrap_pyfunction!(read_variable_f64, m)?)?;
     m.add_function(wrap_pyfunction!(read_vdf_f32, m)?)?;
+    m.add_function(wrap_pyfunction!(read_vdf_f64, m)?)?;
     Ok(())
 }

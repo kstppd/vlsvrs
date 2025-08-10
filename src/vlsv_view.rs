@@ -104,6 +104,7 @@ fn main() {
         .read_variable::<f32>(&var, Some(4))
         .or_else(|| f.read_vdf::<f32>(var.parse::<usize>().unwrap(), "proton"))
         .unwrap();
+
     let eps = 1e-30;
     data.mapv_inplace(|v| (v + eps).log10());
     let max = data.fold(f32::NEG_INFINITY, |a, &b| a.max(b));
