@@ -1761,6 +1761,7 @@ pub mod mod_vlsv_tracing {
     }
 }
 
+#[cfg(feature = "with_bindings")]
 pub mod mod_vlsv_exports {
     use super::mod_vlsv_reader::VlsvFile;
     use ndarray::Array4;
