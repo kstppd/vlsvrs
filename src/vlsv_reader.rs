@@ -1,5 +1,7 @@
 #[allow(dead_code)]
 pub mod vlsv_reader {
+    const VLSV_FOOTER_LOC_START: usize = 8;
+    const VLSV_FOOTER_LOC_END: usize = 16;
     use bytemuck::{Pod, cast_slice};
     use core::convert::TryInto;
     use memmap2::Mmap;
@@ -32,35 +34,40 @@ pub mod vlsv_reader {
         pub fn new(filename: &str) -> Result<Self, Box<dyn std::error::Error>> {
             let f = std::fs::File::open(filename)?;
             let mmap = unsafe { Mmap::map(&f)? };
-            let footer_offset = i64::from_ne_bytes(mmap[8..16].try_into()?) as usize;
+            let footer_offset =
+                usize::from_ne_bytes(mmap[VLSV_FOOTER_LOC_START..VLSV_FOOTER_LOC_END].try_into()?)
+                    as usize;
             let xml_string = std::str::from_utf8(&mmap[footer_offset..])?.to_string();
 
             let root: VlsvRoot = serde_xml_rs::from_str(&xml_string)?;
 
-            let mut vars = root
+            let vars: HashMap<String, Variable> = root
                 .variables
                 .iter()
                 .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
-                .collect::<HashMap<_, _>>();
+                .chain(
+                    [
+                        ("CONFIG", "config_file", "Config not available!"),
+                        ("VERSION", "version_information", "Version not available!"),
+                    ]
+                    .into_iter()
+                    .filter_map(|(tag, section, warn_msg)| {
+                        match read_tag(&xml_string, tag, None, Some(section)) {
+                            Some(x) => Some((x.name.clone().unwrap(), x)),
+                            None => {
+                                eprintln!("{}", warn_msg);
+                                None
+                            }
+                        }
+                    }),
+                )
+                .collect();
 
-            let version: Option<Variable> =
-                read_tag(&xml_string, "VERSION", None, Some("version_information"));
-
-            let config: Option<Variable> =
-                read_tag(&xml_string, "CONFIG", None, Some("config_file"));
-
-            if let Some(x) = config {
-                vars.insert(x.name.clone().unwrap(), x);
-            }
-            if let Some(x) = version {
-                vars.insert(x.name.clone().unwrap(), x);
-            }
-
-            let params = root
+            let params: HashMap<String, Variable> = root
                 .parameters
                 .iter()
                 .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
-                .collect::<HashMap<_, _>>();
+                .collect();
 
             Ok(Self {
                 filename: filename.to_string(),
@@ -116,8 +123,8 @@ pub mod vlsv_reader {
         }
 
         pub fn read_config(&self) -> Option<String> {
-            let name = "config_file";
-            let info = self.get_dataset(name)?;
+            const NAME: &str = "config_file";
+            let info = self.get_dataset(NAME)?;
             let expected_bytes = info.datasize * info.vectorsize * info.arraysize;
             assert!(
                 info.offset + expected_bytes <= self.memmap.len(),
@@ -134,8 +141,8 @@ pub mod vlsv_reader {
         }
 
         pub fn read_version(&self) -> Option<String> {
-            let name = "version_information";
-            let info = self.get_dataset(name)?;
+            const NAME: &str = "version_information";
+            let info = self.get_dataset(NAME)?;
             let expected_bytes = info.datasize * info.vectorsize * info.arraysize;
             assert!(
                 info.offset + expected_bytes <= self.memmap.len(),
