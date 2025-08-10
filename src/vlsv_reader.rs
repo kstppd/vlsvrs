@@ -1,3 +1,45 @@
+/*
+File: vlsv_reader.rs
+Author: Kostis Papadakis 2024/2025 (kpapadakis@protonmail.com)
+Licence: Open so go build a startup and become a billionaire!
+
+This is a set of tools written mainly for fun but also for
+some projects in Vlasiator (Asterix, Faiser...).
+A very very nice thing here is that we can actually read
+in a VDF into a dense mesh (we can also remap the VDF to a target mesh)
+which is handy for training neural nets.
+
+EXAMPLES:
+    let f = VlsvFile::new("bulk.vlsv").unwrap();
+    //OP: vec->scalar reduction into first component with  0->x 1->y 2->z 3->magnitude
+    let OP = 0;
+    let data:Array4<_> = f.read_variable::<f32>(&varname, Some(OP)).unwrap()
+    let data:Array4<_> = f.read_vg_variable_as_fg::<f32>(&varname, Some(OP)).unwrap()
+    let data:Array4<_> = f.read_fsgrid_variable::<f32>(&varname, Some(OP)).unwrap()
+    let data:Array4<_> = f.read_vdf::<f32>(256, "proton")).unwrap();
+
+There are 3 main parts here:
+1) MOD_VLSV_READER:
+    Reads VLSV files and metadata.
+    Can read orderd fsgrid variables.
+    Can read vg variables as fg.
+    Can read dense vdfs and up/down scale them.
+    Has much smaller memory footprint than analysator.
+
+    Keywords:
+    read_scalar_parameter, read_config, read_version, read_variable_into, get_wid, get_vspace_mesh_bbox, get_spatial_mesh_extents, get_vspace_mesh_extents, get_domain_decomposition, get_max_amr_refinement, get_writting_tasks, get_spatial_mesh_bbox, get_dataset, read_vg_variable_as_fg, read_fsgrid_variable, read_vdf, read_vdf_into, read_variable, read_tag, vg_variable_to_fg
+
+2) MOD_VLSV_TRACING:
+    Particle tracing routines using fields from Vlasiator.
+
+    Keywords:
+    get_fields_at, new_with_energy_at_Lshell, boris, larmor_radius, borris_adaptive
+
+3) MOD_VLSV_EXPORTS:
+    Creates C and Python interfaces for VLSV_READER.
+    Keywords:
+    read_variable_f64, read_variable_f32, read_vdf_f32, read_vdf_f64
+*/
 #![allow(dead_code)]
 #![allow(non_snake_case)]
 
@@ -1178,6 +1220,49 @@ pub mod mod_vlsv_tracing {
     use std::io::Write;
     extern crate libc;
     use super::mod_vlsv_reader::*;
+
+    pub mod physical_constants {
+        pub mod f64 {
+            pub const C: f64 = 299792458.0; // m/s
+            pub const C2: f64 = C * C; // m/s
+            pub const PROTON_MASS: f64 = 1.67262192e-27; // kg
+            pub const PROTON_CHARGE: f64 = 1.602e-19; // C
+            pub const ELECTRON_MASS: f64 = 9.1093837e-31; // kg
+            pub const ELECTRON_CHARGE: f64 = -PROTON_CHARGE; // C
+            pub const JOULE_TO_KEV: f64 = 6.242e+15;
+            pub const JOULE_TO_EV: f64 = 6.242e+18;
+            pub const DEG_TO_RAD: f64 = std::f64::consts::PI / 180.0_f64;
+            pub const RAD_TO_DEG: f64 = 180.0_f64 / std::f64::consts::PI;
+            pub const EV_TO_JOULE: f64 = 1_f64 / JOULE_TO_EV;
+            pub const EARTH_RE: f64 = 6378137.0;
+            pub const OUTER_LIM: f64 = 30.0 * EARTH_RE;
+            pub const INNER_LIM: f64 = 5.0 * EARTH_RE;
+            pub const TOL: f64 = 5e-5;
+            pub const PRECIPITATION_RE: f64 = 1.2 * EARTH_RE;
+            pub const MAX_STEPS: usize = 10000000;
+            pub const DIPOLE_MOMENT: f64 = 8.0e15;
+        }
+        pub mod f32 {
+            pub const C: f32 = 299792458.0; // m/s
+            pub const C2: f32 = C * C; // m/s
+            pub const PROTON_MASS: f32 = 1.67262192e-27; // kg
+            pub const PROTON_CHARGE: f32 = 1.602e-19; // C
+            pub const ELECTRON_MASS: f32 = 9.1093837e-31; // kg
+            pub const ELECTRON_CHARGE: f32 = -PROTON_CHARGE; // C
+            pub const JOULE_TO_KEV: f32 = 6.242e+15;
+            pub const JOULE_TO_EV: f32 = 6.242e+18;
+            pub const DEG_TO_RAD: f32 = std::f32::consts::PI / 180.0_f32;
+            pub const RAD_TO_DEG: f32 = 180.0_f32 / std::f32::consts::PI;
+            pub const EV_TO_JOULE: f32 = 1_f32 / JOULE_TO_EV;
+            pub const EARTH_RE: f32 = 6378137.0;
+            pub const OUTER_LIM: f32 = 30.0 * EARTH_RE;
+            pub const INNER_LIM: f32 = 5.0 * EARTH_RE;
+            pub const TOL: f32 = 5e-5;
+            pub const PRECIPITATION_RE: f32 = 1.2 * EARTH_RE;
+            pub const MAX_STEPS: usize = 10000000;
+            pub const DIPOLE_MOMENT: f32 = 8.0e15;
+        }
+    }
 
     pub trait PtrTrait:
         Float
