@@ -12,7 +12,7 @@ ndarray = "0.16.1"
 ndarray-npy = "0.9.1"
 num-traits = "0.2.19"
 numpy = "0.25.0"
-pyo3 = "0.25.1"
+pyo3 = {version="0.25.1",features =["extension-module"]}
 rand = "0.9.0"
 rand_distr = "0.5.1"
 raylib = "5.5.1"
