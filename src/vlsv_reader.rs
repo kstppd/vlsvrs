@@ -9,86 +9,6 @@ pub mod vlsv_reader {
     use serde::Deserialize;
     use std::collections::HashMap;
 
-    #[derive(Deserialize, Debug, Clone)]
-    #[serde(rename_all = "UPPERCASE")]
-    pub struct Variable {
-        #[serde(rename = "arraysize")]
-        pub arraysize: Option<String>,
-        #[serde(rename = "datasize")]
-        pub datasize: Option<String>,
-        #[serde(rename = "datatype")]
-        pub datatype: Option<String>,
-        #[serde(rename = "mesh")]
-        pub mesh: Option<String>,
-        #[serde(rename = "name")]
-        pub name: Option<String>,
-        #[serde(rename = "vectorsize")]
-        pub vectorsize: Option<String>,
-        #[serde(rename = "max_refinement_level")]
-        pub max_refinement_level: Option<String>,
-        #[serde(rename = "unit")]
-        pub unit: Option<String>,
-        #[serde(rename = "unitConversion")]
-        pub unit_conversion: Option<String>,
-        #[serde(rename = "unitLaTeX")]
-        pub unit_latex: Option<String>,
-        #[serde(rename = "variableLaTeX")]
-        pub variable_latex: Option<String>,
-        #[serde(rename = "$value")]
-        pub offset: Option<String>,
-    }
-
-    #[derive(Deserialize, Debug)]
-    pub struct VlsvRoot {
-        #[serde(rename = "VARIABLE")]
-        pub variables: Vec<Variable>,
-
-        #[serde(rename = "PARAMETER")]
-        pub parameters: Vec<Variable>,
-
-        #[serde(rename = "BLOCKIDS")]
-        pub blockids: Option<Vec<Variable>>,
-
-        #[serde(rename = "BLOCKSPERCELL")]
-        pub blockspercell: Option<Vec<Variable>>,
-
-        #[serde(rename = "BLOCKVARIABLE")]
-        pub blockvariable: Option<Vec<Variable>>,
-
-        #[serde(rename = "CELLSWITHBLOCKS")]
-        pub cellswithblocks: Option<Vec<Variable>>,
-
-        #[serde(rename = "CONFIG")]
-        pub config: Option<Vec<Variable>>,
-
-        #[serde(rename = "MESH")]
-        pub mesh: Option<Vec<Variable>>,
-
-        #[serde(rename = "MESH_BBOX")]
-        pub mesh_bbox: Option<Vec<Variable>>,
-
-        #[serde(rename = "MESH_DECOMPOSITION")]
-        pub mesh_decomposition: Option<Vec<Variable>>,
-
-        #[serde(rename = "MESH_DOMAIN_SIZES")]
-        pub mesh_domain_sizes: Option<Vec<Variable>>,
-
-        #[serde(rename = "MESH_GHOST_DOMAINS")]
-        pub mesh_ghost_domains: Option<Vec<Variable>>,
-
-        #[serde(rename = "MESH_GHOST_LOCALIDS")]
-        pub mesh_ghost_localids: Option<Vec<Variable>>,
-
-        #[serde(rename = "MESH_NODE_CRDS_X")]
-        pub mesh_node_crds_x: Option<Vec<Variable>>,
-
-        #[serde(rename = "MESH_NODE_CRDS_Y")]
-        pub mesh_node_crds_y: Option<Vec<Variable>>,
-
-        #[serde(rename = "MESH_NODE_CRDS_Z")]
-        pub mesh_node_crds_z: Option<Vec<Variable>>,
-    }
-
     #[derive(Debug, Clone)]
     pub struct VlsvDataset {
         pub offset: usize,
@@ -96,317 +16,6 @@ pub mod vlsv_reader {
         pub vectorsize: usize,
         pub datasize: usize,
         pub datatype: String,
-    }
-
-    pub trait TypeTag {
-        fn type_name() -> &'static str;
-    }
-
-    macro_rules! impl_prim_meta {
-        ( $( $t:ty => $tag:expr ),* $(,)? ) => {
-            $(
-                impl TypeTag for $t {
-                    fn type_name() -> &'static str { $tag }
-                }
-
-            )*
-        };
-    }
-
-    //Vlasiator vlsv naming convention
-    impl_prim_meta! {
-        f32   => "float",
-        f64   => "float",
-        u32   => "uint",
-        i32   => "int",
-        u64   => "uint",
-        i64   => "int",
-        u8    => "u8",
-        usize => "uint",
-    }
-
-    pub fn apply_op_in_place<T>(arr: &mut Array4<T>, op: Option<i32>)
-    where
-        T: Num + NumCast + Copy + Pod,
-    {
-        let Some(op) = op else { return };
-
-        match op {
-            0 | 1 | 2 | 3 => {}
-            4 => {
-                for mut lane in arr.lanes_mut(Axis(3)) {
-                    // compute in f64 for safety
-                    let sum_sq: f64 = lane
-                        .iter()
-                        .map(|&x| {
-                            let xf: f64 = NumCast::from(x).unwrap();
-                            xf * xf
-                        })
-                        .sum();
-
-                    let mag_f64 = sum_sq.sqrt();
-
-                    // cast back to T
-                    lane[0] = NumCast::from(mag_f64).unwrap();
-                }
-            }
-            _ => panic!("Unknown operator"),
-        }
-    }
-
-    fn read_tag(xml: &str, tag: &str, mesh: Option<&str>, name: Option<&str>) -> Option<Variable> {
-        let re_normal = Regex::new(&format!(
-            r#"(?s)<{t}\b([^>]*)>([^<]*)</{t}>"#,
-            t = regex::escape(tag)
-        ))
-        .unwrap();
-        let re_self =
-            Regex::new(&format!(r#"(?s)<{t}\b([^>]*)/>"#, t = regex::escape(tag))).unwrap();
-        let re_attr = Regex::new(r#"(\w+)\s*=\s*"([^"]*)""#).unwrap();
-        let parse_match = |attrs_str: &str, inner_text: Option<&str>| -> Option<Variable> {
-            let mut attrs: HashMap<&str, &str> = HashMap::new();
-            for cap in re_attr.captures_iter(attrs_str) {
-                let k = cap.get(1).unwrap().as_str();
-                let v = cap.get(2).unwrap().as_str();
-                attrs.insert(k, v);
-            }
-
-            if let Some(m) = mesh {
-                if attrs.get("mesh").copied() != Some(m) {
-                    return None;
-                }
-            }
-            if let Some(n) = name {
-                if attrs.get("name").copied() != Some(n) {
-                    return None;
-                }
-            }
-
-            let arraysize = attrs.get("arraysize").map(|s| s.to_string());
-            let datasize = attrs.get("datasize").map(|s| s.to_string());
-            let datatype = attrs.get("datatype").map(|s| s.to_string());
-            let mesh_str = attrs.get("mesh").map(|s| s.to_string());
-            let name_str = attrs.get("name").map(|s| s.to_string());
-            let vectorsize = attrs.get("vectorsize").map(|s| s.to_string());
-            let max_refinement_level = attrs.get("max_refinement_level").map(|s| s.to_string());
-            let offset = inner_text.map(|s| s.trim().to_string());
-
-            Some(Variable {
-                arraysize,
-                datasize,
-                datatype,
-                mesh: mesh_str,
-                name: name_str.or_else(|| Some(tag.to_string())),
-                vectorsize,
-                max_refinement_level,
-                unit: attrs.get("unit").map(|s| s.to_string()),
-                unit_conversion: attrs.get("unitConversion").map(|s| s.to_string()),
-                unit_latex: attrs.get("unitLaTeX").map(|s| s.to_string()),
-                variable_latex: attrs.get("variableLaTeX").map(|s| s.to_string()),
-                offset,
-            })
-        };
-        for caps in re_normal.captures_iter(xml) {
-            let attrs_str = caps.get(1).unwrap().as_str();
-            let text = caps.get(2).map(|m| m.as_str());
-            if let Some(v) = parse_match(attrs_str, text) {
-                return Some(v);
-            }
-        }
-
-        for caps in re_self.captures_iter(xml) {
-            let attrs_str = caps.get(1).unwrap().as_str();
-            if let Some(v) = parse_match(attrs_str, None) {
-                return Some(v);
-            }
-        }
-        None
-    }
-
-    fn cid2ijk(cid: u64, nx: usize, ny: usize) -> (usize, usize, usize) {
-        let lin = (cid - 1) as usize;
-        let i = lin % nx;
-        let j = (lin / nx) % ny;
-        let k = lin / (nx * ny);
-        (i, j, k)
-    }
-
-    fn amr_level(cellid: u64, x0: usize, y0: usize, z0: usize, lmax: u32) -> Option<u32> {
-        let n0 = (x0 as u64) * (y0 as u64) * (z0 as u64);
-        let mut cum = 0u64;
-        for lvl in 0..=lmax {
-            let count = n0.checked_shl(3 * lvl)?;
-            if cellid <= cum + count {
-                return Some(lvl);
-            }
-            cum = cum.checked_add(count)?;
-        }
-        None
-    }
-
-    fn cid2fineijk(
-        cellid: u64,
-        level: u32,
-        lmax: u32,
-        x0: usize,
-        y0: usize,
-        z0: usize,
-    ) -> Option<(usize, usize, usize)> {
-        let n0 = (x0 as u64) * (y0 as u64) * (z0 as u64);
-
-        let mut cum = 0u64;
-        for l in 0..level {
-            cum = cum.checked_add(n0.checked_shl(3 * l)?)?;
-        }
-
-        let id0 = cellid.checked_sub(cum)?.checked_sub(1)?;
-        let nx_l = (x0 as u64) << level;
-        let ny_l = (y0 as u64) << level;
-
-        let i_l = (id0 % nx_l) as usize;
-        let j_l = ((id0 / nx_l) % ny_l) as usize;
-        let k_l = (id0 / (nx_l * ny_l)) as usize;
-
-        let scale = 1usize << ((lmax - level) as usize);
-        Some((i_l * scale, j_l * scale, k_l * scale))
-    }
-
-    pub fn build_vg_indexes_on_fg(
-        cell_ids: &[u64],
-        fg_dims: (usize, usize, usize),
-        x0: usize,
-        y0: usize,
-        z0: usize,
-        lmax: u32,
-    ) -> Array3<usize> {
-        let (fx, fy, fz) = fg_dims;
-        assert_eq!(fx, x0 << lmax);
-        assert_eq!(fy, y0 << lmax);
-        assert_eq!(fz, z0 << lmax);
-
-        let mut map = Array3::<usize>::from_elem((fx, fy, fz), usize::MAX);
-        for (vg_idx, &cid) in cell_ids.iter().enumerate() {
-            let lvl = amr_level(cid, x0, y0, z0, lmax).expect("Invalid CellID or max level");
-            let (sx, sy, sz) =
-                cid2fineijk(cid, lvl, lmax, x0, y0, z0).expect("Failed to map CellID to fine ijk");
-            let scale = 1usize << (lmax - lvl) as usize;
-            let ex = sx + scale;
-            let ey = sy + scale;
-            let ez = sz + scale;
-            assert!(ex <= fx && ey <= fy && ez <= fz);
-            map.slice_mut(s![sx..ex, sy..ey, sz..ez]).fill(vg_idx);
-        }
-        map
-    }
-
-    pub fn vg_variable_to_fg<T: bytemuck::Pod + Copy + Default>(
-        cell_ids: &[u64],
-        vg_rows: &[T],
-        vecsz: usize,
-        x0: usize,
-        y0: usize,
-        z0: usize,
-        lmax: u32,
-    ) -> ndarray::Array4<T> {
-        use ndarray::{Array4, s};
-        let (fx, fy, fz) = (x0 << lmax, y0 << lmax, z0 << lmax);
-        let mut fg = Array4::<T>::default((fx, fy, fz, vecsz));
-        assert_eq!(vg_rows.len(), cell_ids.len() * vecsz);
-
-        for (idx, &cid) in cell_ids.iter().enumerate() {
-            let lvl = amr_level(cid, x0, y0, z0, lmax).expect("bad CellID/levels");
-            let (sx, sy, sz) = cid2fineijk(cid, lvl, lmax, x0, y0, z0).unwrap();
-            let scale = 1usize << ((lmax - lvl) as usize);
-            let (ex, ey, ez) = (sx + scale, sy + scale, sz + scale);
-
-            let row = &vg_rows[idx * vecsz..(idx + 1) * vecsz];
-            let mut block = fg.slice_mut(s![sx..ex, sy..ey, sz..ez, ..]);
-            for xi in 0..scale {
-                for yj in 0..scale {
-                    for zk in 0..scale {
-                        let mut vox = block.slice_mut(s![xi, yj, zk, ..]);
-                        vox.assign(&ndarray::Array1::from(row.to_vec()));
-                    }
-                }
-            }
-        }
-        fg
-    }
-
-    impl TryFrom<&Variable> for VlsvDataset {
-        type Error = String;
-
-        fn try_from(var: &Variable) -> Result<Self, Self::Error> {
-            Ok(Self {
-                offset: var
-                    .offset
-                    .as_deref()
-                    .ok_or("Missing offset")?
-                    .parse::<usize>()
-                    .map_err(|e| format!("Invalid offset: {}", e))?,
-
-                arraysize: var
-                    .arraysize
-                    .as_deref()
-                    .ok_or("Missing arraysize")?
-                    .parse::<usize>()
-                    .map_err(|e| format!("Invalid arraysize: {}", e))?,
-
-                vectorsize: var
-                    .vectorsize
-                    .as_deref()
-                    .unwrap_or("1")
-                    .parse::<usize>()
-                    .map_err(|e| format!("Invalid vectorsize: {}", e))?,
-
-                datasize: var
-                    .datasize
-                    .as_deref()
-                    .ok_or("Missing datasize")?
-                    .parse::<usize>()
-                    .map_err(|e| format!("Invalid datasize: {}", e))?,
-
-                datatype: var.datatype.as_ref().ok_or("Missing datatype")?.clone(),
-            })
-        }
-    }
-
-    impl TryFrom<Variable> for VlsvDataset {
-        type Error = String;
-
-        fn try_from(var: Variable) -> Result<Self, Self::Error> {
-            Ok(Self {
-                offset: var
-                    .offset
-                    .as_ref()
-                    .ok_or("Missing offset")?
-                    .parse::<usize>()
-                    .map_err(|e| format!("Invalid offset: {}", e))?,
-
-                arraysize: var
-                    .arraysize
-                    .as_ref()
-                    .ok_or("Missing arraysize")?
-                    .parse::<usize>()
-                    .map_err(|e| format!("Invalid arraysize: {}", e))?,
-
-                vectorsize: var
-                    .vectorsize
-                    .as_ref()
-                    .unwrap_or(&"1".to_string())
-                    .parse::<usize>()
-                    .map_err(|e| format!("Invalid vectorsize: {}", e))?,
-
-                datasize: var
-                    .datasize
-                    .as_ref()
-                    .ok_or("Missing datasize")?
-                    .parse::<usize>()
-                    .map_err(|e| format!("Invalid datasize: {}", e))?,
-
-                datatype: var.datatype.clone().ok_or("Missing datatype")?,
-            })
-        }
     }
 
     #[derive(Debug)]
@@ -1025,6 +634,397 @@ pub mod vlsv_reader {
             }
             Some(vdf)
         }
+    }
+
+    fn read_tag(xml: &str, tag: &str, mesh: Option<&str>, name: Option<&str>) -> Option<Variable> {
+        let re_normal = Regex::new(&format!(
+            r#"(?s)<{t}\b([^>]*)>([^<]*)</{t}>"#,
+            t = regex::escape(tag)
+        ))
+        .unwrap();
+        let re_self =
+            Regex::new(&format!(r#"(?s)<{t}\b([^>]*)/>"#, t = regex::escape(tag))).unwrap();
+        let re_attr = Regex::new(r#"(\w+)\s*=\s*"([^"]*)""#).unwrap();
+        let parse_match = |attrs_str: &str, inner_text: Option<&str>| -> Option<Variable> {
+            let mut attrs: HashMap<&str, &str> = HashMap::new();
+            for cap in re_attr.captures_iter(attrs_str) {
+                let k = cap.get(1).unwrap().as_str();
+                let v = cap.get(2).unwrap().as_str();
+                attrs.insert(k, v);
+            }
+
+            if let Some(m) = mesh {
+                if attrs.get("mesh").copied() != Some(m) {
+                    return None;
+                }
+            }
+            if let Some(n) = name {
+                if attrs.get("name").copied() != Some(n) {
+                    return None;
+                }
+            }
+
+            let arraysize = attrs.get("arraysize").map(|s| s.to_string());
+            let datasize = attrs.get("datasize").map(|s| s.to_string());
+            let datatype = attrs.get("datatype").map(|s| s.to_string());
+            let mesh_str = attrs.get("mesh").map(|s| s.to_string());
+            let name_str = attrs.get("name").map(|s| s.to_string());
+            let vectorsize = attrs.get("vectorsize").map(|s| s.to_string());
+            let max_refinement_level = attrs.get("max_refinement_level").map(|s| s.to_string());
+            let offset = inner_text.map(|s| s.trim().to_string());
+
+            Some(Variable {
+                arraysize,
+                datasize,
+                datatype,
+                mesh: mesh_str,
+                name: name_str.or_else(|| Some(tag.to_string())),
+                vectorsize,
+                max_refinement_level,
+                unit: attrs.get("unit").map(|s| s.to_string()),
+                unit_conversion: attrs.get("unitConversion").map(|s| s.to_string()),
+                unit_latex: attrs.get("unitLaTeX").map(|s| s.to_string()),
+                variable_latex: attrs.get("variableLaTeX").map(|s| s.to_string()),
+                offset,
+            })
+        };
+        for caps in re_normal.captures_iter(xml) {
+            let attrs_str = caps.get(1).unwrap().as_str();
+            let text = caps.get(2).map(|m| m.as_str());
+            if let Some(v) = parse_match(attrs_str, text) {
+                return Some(v);
+            }
+        }
+
+        for caps in re_self.captures_iter(xml) {
+            let attrs_str = caps.get(1).unwrap().as_str();
+            if let Some(v) = parse_match(attrs_str, None) {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    pub fn apply_op_in_place<T>(arr: &mut Array4<T>, op: Option<i32>)
+    where
+        T: Num + NumCast + Copy + Pod,
+    {
+        let Some(op) = op else { return };
+
+        match op {
+            0 | 1 | 2 | 3 => {}
+            4 => {
+                for mut lane in arr.lanes_mut(Axis(3)) {
+                    // compute in f64 for safety
+                    let sum_sq: f64 = lane
+                        .iter()
+                        .map(|&x| {
+                            let xf: f64 = NumCast::from(x).unwrap();
+                            xf * xf
+                        })
+                        .sum();
+
+                    let mag_f64 = sum_sq.sqrt();
+
+                    // cast back to T
+                    lane[0] = NumCast::from(mag_f64).unwrap();
+                }
+            }
+            _ => panic!("Unknown operator"),
+        }
+    }
+
+    fn cid2ijk(cid: u64, nx: usize, ny: usize) -> (usize, usize, usize) {
+        let lin = (cid - 1) as usize;
+        let i = lin % nx;
+        let j = (lin / nx) % ny;
+        let k = lin / (nx * ny);
+        (i, j, k)
+    }
+
+    fn amr_level(cellid: u64, x0: usize, y0: usize, z0: usize, lmax: u32) -> Option<u32> {
+        let n0 = (x0 as u64) * (y0 as u64) * (z0 as u64);
+        let mut cum = 0u64;
+        for lvl in 0..=lmax {
+            let count = n0.checked_shl(3 * lvl)?;
+            if cellid <= cum + count {
+                return Some(lvl);
+            }
+            cum = cum.checked_add(count)?;
+        }
+        None
+    }
+
+    fn cid2fineijk(
+        cellid: u64,
+        level: u32,
+        lmax: u32,
+        x0: usize,
+        y0: usize,
+        z0: usize,
+    ) -> Option<(usize, usize, usize)> {
+        let n0 = (x0 as u64) * (y0 as u64) * (z0 as u64);
+
+        let mut cum = 0u64;
+        for l in 0..level {
+            cum = cum.checked_add(n0.checked_shl(3 * l)?)?;
+        }
+
+        let id0 = cellid.checked_sub(cum)?.checked_sub(1)?;
+        let nx_l = (x0 as u64) << level;
+        let ny_l = (y0 as u64) << level;
+
+        let i_l = (id0 % nx_l) as usize;
+        let j_l = ((id0 / nx_l) % ny_l) as usize;
+        let k_l = (id0 / (nx_l * ny_l)) as usize;
+
+        let scale = 1usize << ((lmax - level) as usize);
+        Some((i_l * scale, j_l * scale, k_l * scale))
+    }
+
+    pub fn build_vg_indexes_on_fg(
+        cell_ids: &[u64],
+        fg_dims: (usize, usize, usize),
+        x0: usize,
+        y0: usize,
+        z0: usize,
+        lmax: u32,
+    ) -> Array3<usize> {
+        let (fx, fy, fz) = fg_dims;
+        assert_eq!(fx, x0 << lmax);
+        assert_eq!(fy, y0 << lmax);
+        assert_eq!(fz, z0 << lmax);
+
+        let mut map = Array3::<usize>::from_elem((fx, fy, fz), usize::MAX);
+        for (vg_idx, &cid) in cell_ids.iter().enumerate() {
+            let lvl = amr_level(cid, x0, y0, z0, lmax).expect("Invalid CellID or max level");
+            let (sx, sy, sz) =
+                cid2fineijk(cid, lvl, lmax, x0, y0, z0).expect("Failed to map CellID to fine ijk");
+            let scale = 1usize << (lmax - lvl) as usize;
+            let ex = sx + scale;
+            let ey = sy + scale;
+            let ez = sz + scale;
+            assert!(ex <= fx && ey <= fy && ez <= fz);
+            map.slice_mut(s![sx..ex, sy..ey, sz..ez]).fill(vg_idx);
+        }
+        map
+    }
+
+    pub fn vg_variable_to_fg<T: bytemuck::Pod + Copy + Default>(
+        cell_ids: &[u64],
+        vg_rows: &[T],
+        vecsz: usize,
+        x0: usize,
+        y0: usize,
+        z0: usize,
+        lmax: u32,
+    ) -> ndarray::Array4<T> {
+        use ndarray::{Array4, s};
+        let (fx, fy, fz) = (x0 << lmax, y0 << lmax, z0 << lmax);
+        let mut fg = Array4::<T>::default((fx, fy, fz, vecsz));
+        assert_eq!(vg_rows.len(), cell_ids.len() * vecsz);
+
+        for (idx, &cid) in cell_ids.iter().enumerate() {
+            let lvl = amr_level(cid, x0, y0, z0, lmax).expect("bad CellID/levels");
+            let (sx, sy, sz) = cid2fineijk(cid, lvl, lmax, x0, y0, z0).unwrap();
+            let scale = 1usize << ((lmax - lvl) as usize);
+            let (ex, ey, ez) = (sx + scale, sy + scale, sz + scale);
+
+            let row = &vg_rows[idx * vecsz..(idx + 1) * vecsz];
+            let mut block = fg.slice_mut(s![sx..ex, sy..ey, sz..ez, ..]);
+            for xi in 0..scale {
+                for yj in 0..scale {
+                    for zk in 0..scale {
+                        let mut vox = block.slice_mut(s![xi, yj, zk, ..]);
+                        vox.assign(&ndarray::Array1::from(row.to_vec()));
+                    }
+                }
+            }
+        }
+        fg
+    }
+
+    #[derive(Deserialize, Debug, Clone)]
+    #[serde(rename_all = "UPPERCASE")]
+    pub struct Variable {
+        #[serde(rename = "arraysize")]
+        pub arraysize: Option<String>,
+        #[serde(rename = "datasize")]
+        pub datasize: Option<String>,
+        #[serde(rename = "datatype")]
+        pub datatype: Option<String>,
+        #[serde(rename = "mesh")]
+        pub mesh: Option<String>,
+        #[serde(rename = "name")]
+        pub name: Option<String>,
+        #[serde(rename = "vectorsize")]
+        pub vectorsize: Option<String>,
+        #[serde(rename = "max_refinement_level")]
+        pub max_refinement_level: Option<String>,
+        #[serde(rename = "unit")]
+        pub unit: Option<String>,
+        #[serde(rename = "unitConversion")]
+        pub unit_conversion: Option<String>,
+        #[serde(rename = "unitLaTeX")]
+        pub unit_latex: Option<String>,
+        #[serde(rename = "variableLaTeX")]
+        pub variable_latex: Option<String>,
+        #[serde(rename = "$value")]
+        pub offset: Option<String>,
+    }
+
+    #[derive(Deserialize, Debug)]
+    pub struct VlsvRoot {
+        #[serde(rename = "VARIABLE")]
+        pub variables: Vec<Variable>,
+
+        #[serde(rename = "PARAMETER")]
+        pub parameters: Vec<Variable>,
+
+        #[serde(rename = "BLOCKIDS")]
+        pub blockids: Option<Vec<Variable>>,
+
+        #[serde(rename = "BLOCKSPERCELL")]
+        pub blockspercell: Option<Vec<Variable>>,
+
+        #[serde(rename = "BLOCKVARIABLE")]
+        pub blockvariable: Option<Vec<Variable>>,
+
+        #[serde(rename = "CELLSWITHBLOCKS")]
+        pub cellswithblocks: Option<Vec<Variable>>,
+
+        #[serde(rename = "CONFIG")]
+        pub config: Option<Vec<Variable>>,
+
+        #[serde(rename = "MESH")]
+        pub mesh: Option<Vec<Variable>>,
+
+        #[serde(rename = "MESH_BBOX")]
+        pub mesh_bbox: Option<Vec<Variable>>,
+
+        #[serde(rename = "MESH_DECOMPOSITION")]
+        pub mesh_decomposition: Option<Vec<Variable>>,
+
+        #[serde(rename = "MESH_DOMAIN_SIZES")]
+        pub mesh_domain_sizes: Option<Vec<Variable>>,
+
+        #[serde(rename = "MESH_GHOST_DOMAINS")]
+        pub mesh_ghost_domains: Option<Vec<Variable>>,
+
+        #[serde(rename = "MESH_GHOST_LOCALIDS")]
+        pub mesh_ghost_localids: Option<Vec<Variable>>,
+
+        #[serde(rename = "MESH_NODE_CRDS_X")]
+        pub mesh_node_crds_x: Option<Vec<Variable>>,
+
+        #[serde(rename = "MESH_NODE_CRDS_Y")]
+        pub mesh_node_crds_y: Option<Vec<Variable>>,
+
+        #[serde(rename = "MESH_NODE_CRDS_Z")]
+        pub mesh_node_crds_z: Option<Vec<Variable>>,
+    }
+
+    impl TryFrom<&Variable> for VlsvDataset {
+        type Error = String;
+
+        fn try_from(var: &Variable) -> Result<Self, Self::Error> {
+            Ok(Self {
+                offset: var
+                    .offset
+                    .as_deref()
+                    .ok_or("Missing offset")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("Invalid offset: {}", e))?,
+
+                arraysize: var
+                    .arraysize
+                    .as_deref()
+                    .ok_or("Missing arraysize")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("Invalid arraysize: {}", e))?,
+
+                vectorsize: var
+                    .vectorsize
+                    .as_deref()
+                    .unwrap_or("1")
+                    .parse::<usize>()
+                    .map_err(|e| format!("Invalid vectorsize: {}", e))?,
+
+                datasize: var
+                    .datasize
+                    .as_deref()
+                    .ok_or("Missing datasize")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("Invalid datasize: {}", e))?,
+
+                datatype: var.datatype.as_ref().ok_or("Missing datatype")?.clone(),
+            })
+        }
+    }
+
+    impl TryFrom<Variable> for VlsvDataset {
+        type Error = String;
+
+        fn try_from(var: Variable) -> Result<Self, Self::Error> {
+            Ok(Self {
+                offset: var
+                    .offset
+                    .as_ref()
+                    .ok_or("Missing offset")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("Invalid offset: {}", e))?,
+
+                arraysize: var
+                    .arraysize
+                    .as_ref()
+                    .ok_or("Missing arraysize")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("Invalid arraysize: {}", e))?,
+
+                vectorsize: var
+                    .vectorsize
+                    .as_ref()
+                    .unwrap_or(&"1".to_string())
+                    .parse::<usize>()
+                    .map_err(|e| format!("Invalid vectorsize: {}", e))?,
+
+                datasize: var
+                    .datasize
+                    .as_ref()
+                    .ok_or("Missing datasize")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("Invalid datasize: {}", e))?,
+
+                datatype: var.datatype.clone().ok_or("Missing datatype")?,
+            })
+        }
+    }
+
+    pub trait TypeTag {
+        fn type_name() -> &'static str;
+    }
+
+    macro_rules! impl_prim_meta {
+        ( $( $t:ty => $tag:expr ),* $(,)? ) => {
+            $(
+                impl TypeTag for $t {
+                    fn type_name() -> &'static str { $tag }
+                }
+
+            )*
+        };
+    }
+
+    //Vlasiator vlsv naming convention
+    impl_prim_meta! {
+        f32   => "float",
+        f64   => "float",
+        u32   => "uint",
+        i32   => "int",
+        u64   => "uint",
+        i64   => "int",
+        u8    => "u8",
+        usize => "uint",
     }
 }
 
