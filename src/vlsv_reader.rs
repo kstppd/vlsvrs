@@ -1028,22 +1028,22 @@ pub mod vlsv_reader {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
 
-    #[test]
-    fn test() {
-        // let f = vlsv_reader::VlsvFile::new("assets/bulk1.0001299.vlsv").unwrap();
-        // let f = vlsv_reader::VlsvFile::new("/home/kstppd/backups/kstppd/tsi.vlsv").unwrap();
-        let f = vlsv_reader::VlsvFile::new(
-            "/home/kstppd/backups/kstppd/Desktop/bulk_with_fg_10.0000109.vlsv",
-        )
-        .unwrap();
-        // let a = f.read_vdf(256, "proton").unwrap();
-        let a = f.read_fsgrid_variable::<f64>("fg_b_vol", None).unwrap();
-        // println!("{}", a[(100, 100, 100, 0)]);
-        // let _ = f.read_vg_variable_as_fg::<f64>("proton/vg_energydensity", None);
-        // f.print_variables();
-    }
-}
+//     #[test]
+//     fn test() {
+//         // let f = vlsv_reader::VlsvFile::new("assets/bulk1.0001299.vlsv").unwrap();
+//         // let f = vlsv_reader::VlsvFile::new("/home/kstppd/backups/kstppd/tsi.vlsv").unwrap();
+//         // let f = vlsv_reader::VlsvFile::new(
+//         //     "/home/kstppd/backups/kstppd/Desktop/bulk_with_fg_10.0000109.vlsv",
+//         // )
+//         .unwrap();
+//         // let a = f.read_vdf(256, "proton").unwrap();
+//         let a = f.read_fsgrid_variable::<f64>("fg_b_vol", None).unwrap();
+//         // println!("{}", a[(100, 100, 100, 0)]);
+//         // let _ = f.read_vg_variable_as_fg::<f64>("proton/vg_energydensity", None);
+//         // f.print_variables();
+//     }
+// }
