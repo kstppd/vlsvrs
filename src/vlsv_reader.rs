@@ -2125,7 +2125,7 @@ pub mod mod_vlsv_exports {
     }
 
     // -------------------- module --------------------
-    #[pymodule]
+    #[pymodule(name = "vlsvrs")]
     fn vlsvrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_class::<PyVlsvFile>()?;
         m.add_function(wrap_pyfunction!(read_variable_f32, m)?)?;
