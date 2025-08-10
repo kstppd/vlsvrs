@@ -11,7 +11,7 @@ which is handy for training neural nets.
 
 EXAMPLES:
     let f = VlsvFile::new("bulk.vlsv").unwrap();
-    //OP: vec->scalar reduction into first component with  0->x 1->y 2->z 3->magnitude
+    //OP: vec->scalar reduction into first component with  0|1->x(noop) 2->y 3->z 4->magnitude
     let OP = 0;
     let data:Array4<_> = f.read_variable::<f32>(&varname, Some(OP)).unwrap()
     let data:Array4<_> = f.read_vg_variable_as_fg::<f32>(&varname, Some(OP)).unwrap()
