@@ -1,17 +1,12 @@
 #![allow(dead_code)]
 #![allow(non_snake_case)]
 mod constants;
-mod tracer_fields;
-mod tracer_particles;
 mod vlsv_reader;
 use crate::constants::physical_constants;
-use crate::tracer_particles::tracer_particles::ParticlePopulation;
+use crate::vlsv_reader::*;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
 use std::sync::{Arc, Mutex};
-use tracer_fields::vlsv_reader::PtrTrait;
-use tracer_fields::vlsv_reader::{DipoleField, Field};
-use tracer_particles::tracer_particles::borris_adaptive;
 
 fn push_population_cpu<T: PtrTrait, F: Field<T> + std::marker::Sync>(
     pop: &mut Arc<Mutex<ParticlePopulation<T>>>,
@@ -31,7 +26,7 @@ fn push_population_cpu<T: PtrTrait, F: Field<T> + std::marker::Sync>(
                 .get_fields_at(time, particle.x, particle.y, particle.z)
                 .unwrap();
             time = time + dt;
-            tracer_particles::tracer_particles::boris(
+            boris(
                 &mut particle,
                 &fields[3..6],
                 &fields[0..3],

@@ -1,7 +1,7 @@
 mod vlsv_reader;
 use ndarray::Zip;
 use raylib::prelude::*;
-use vlsv_reader::vlsv_reader::VlsvFile;
+use vlsv_reader::VlsvFile;
 
 #[derive(Copy, Clone)]
 struct RGB {
