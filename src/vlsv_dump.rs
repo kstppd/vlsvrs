@@ -1,6 +1,6 @@
 mod vlsv_reader;
-use crate::vlsv_reader::VlsvFile;
 use clap::Parser;
+use vlsv_reader::mod_vlsv_reader::VlsvFile;
 /// Simple CLI tool for reading .vlsv files
 #[derive(Parser, Debug)]
 #[command(

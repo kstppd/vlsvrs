@@ -3,6 +3,7 @@
 mod constants;
 mod vlsv_reader;
 use crate::constants::physical_constants;
+use crate::mod_vlsv_tracing::*;
 use crate::vlsv_reader::*;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
