@@ -9,7 +9,7 @@ pub mod vlsv_reader {
     use num_traits::{Num, NumCast, Zero};
     use regex::Regex;
     use serde::Deserialize;
-    use std::collections::HashMap;
+    use std::{collections::HashMap, str::FromStr};
 
     #[derive(Debug, Clone)]
     pub struct VlsvDataset {
@@ -18,6 +18,7 @@ pub mod vlsv_reader {
         pub vectorsize: usize,
         pub datasize: usize,
         pub datatype: String,
+        grid: Option<VlasiatorGrid>,
     }
 
     #[derive(Debug)]
@@ -402,8 +403,11 @@ pub mod vlsv_reader {
             name: &str,
             op: Option<i32>,
         ) -> Option<ndarray::Array4<T>> {
-            let ds = self.get_dataset(name)?;
-            let vecsz = ds.vectorsize;
+            let info = self.get_dataset(name)?;
+            if info.grid.clone()? != VlasiatorGrid::SPATIALGRID {
+                return None;
+            }
+            let vecsz = info.vectorsize;
             let x0 = self.read_scalar_parameter("xcells_ini")? as usize;
             let y0 = self.read_scalar_parameter("ycells_ini")? as usize;
             let z0 = self.read_scalar_parameter("zcells_ini")? as usize;
@@ -411,9 +415,9 @@ pub mod vlsv_reader {
             let cellid_ds = self.get_dataset("CellID")?;
             let mut cell_ids = vec![0u64; cellid_ds.arraysize];
             self.read_variable_into::<u64>(None, Some(cellid_ds), &mut cell_ids);
-            let n_cells = ds.arraysize;
+            let n_cells = info.arraysize;
             let mut vg_rows = vec![T::default(); n_cells * vecsz];
-            self.read_variable_into::<T>(None, Some(ds), vg_rows.as_mut_slice());
+            self.read_variable_into::<T>(None, Some(info), vg_rows.as_mut_slice());
             let mut ordered_var = vg_variable_to_fg(&cell_ids, &vg_rows, vecsz, x0, y0, z0, lmax);
             apply_op_in_place::<T>(&mut ordered_var, op);
             Some(ordered_var)
@@ -427,6 +431,9 @@ pub mod vlsv_reader {
             op: Option<i32>,
         ) -> Option<Array4<T>> {
             let info = self.get_dataset(name)?;
+            if info.grid? != VlasiatorGrid::FSGRID {
+                return None;
+            }
             let decomp = self.get_domain_decomposition()?;
             let ntasks = self.get_writting_tasks()?;
             let (nx, ny, nz) = self.get_spatial_mesh_bbox()?;
@@ -505,57 +512,45 @@ pub mod vlsv_reader {
             Some(ordered_var)
         }
 
-        pub fn read_vdf(&self, cid: usize, pop: &str) -> Option<Array4<f32>> {
+        pub fn read_vdf<T>(&self, cid: usize, pop: &str) -> Option<Array4<T>>
+        where
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+        {
             let blockspercell = TryInto::<VlsvDataset>::try_into(
                 self.root
                     .blockspercell
-                    .as_ref()
-                    .and_then(|items| items.iter().find(|v| v.name.as_deref() == Some(pop)))
-                    .or_else(|| {
-                        eprintln!("ERROR: blockspercell with name '{pop}' not found in VLSV file");
-                        None
-                    })?,
+                    .as_ref()?
+                    .iter()
+                    .find(|v| v.name.as_deref() == Some(pop))?,
             )
             .ok()?;
+
             let cellswithblocks = TryInto::<VlsvDataset>::try_into(
                 self.root
                     .cellswithblocks
-                    .as_ref()
-                    .and_then(|items| items.iter().find(|v| v.name.as_deref() == Some(pop)))
-                    .or_else(|| {
-                        eprintln!(
-                            "ERROR: cellswithblocks with name '{pop}' not found in VLSV file"
-                        );
-                        None
-                    })?,
+                    .as_ref()?
+                    .iter()
+                    .find(|v| v.name.as_deref() == Some(pop))?,
             )
             .ok()?;
+
             let blockids = TryInto::<VlsvDataset>::try_into(
                 self.root
                     .blockids
-                    .as_ref()
-                    .and_then(|items| items.iter().find(|v| v.name.as_deref() == Some(pop)))
-                    .or_else(|| {
-                        eprintln!("ERROR: blockids with name '{pop}' not found in VLSV file");
-                        None
-                    })?,
+                    .as_ref()?
+                    .iter()
+                    .find(|v| v.name.as_deref() == Some(pop))?,
             )
             .ok()?;
+
             let blockvariable = TryInto::<VlsvDataset>::try_into(
                 self.root
                     .blockvariable
-                    .as_ref()
-                    .and_then(|items| items.iter().find(|v| v.name.as_deref() == Some(pop)))
-                    .or_else(|| {
-                        eprintln!("ERROR: blockvariable with name '{pop}' not found in VLSV file");
-                        None
-                    })?,
+                    .as_ref()?
+                    .iter()
+                    .find(|v| v.name.as_deref() == Some(pop))?,
             )
             .ok()?;
-            assert!(
-                blockvariable.datasize == 4,
-                "VDF is not f32! This is not handled yet"
-            );
 
             let wid = self.get_wid()?;
             let wid3 = wid.pow(3);
@@ -567,37 +562,32 @@ pub mod vlsv_reader {
             self.read_variable_into::<usize>(None, Some(cellswithblocks), &mut cids_with_blocks);
             self.read_variable_into::<u32>(None, Some(blockspercell), &mut blocks_per_cell);
 
-            let index = cids_with_blocks.iter().position(|v| *v == cid)?;
+            let index = cids_with_blocks.iter().position(|&v| v == cid)?;
             let read_size = blocks_per_cell[index] as usize;
             let start_block = blocks_per_cell[..index]
                 .iter()
                 .map(|&x| x as usize)
                 .sum::<usize>();
 
-            let read_chunk =
-                |ds: &VlsvDataset, elem_offset: usize, elem_count: usize, dst_bytes: &mut [u8]| {
-                    let byte_offset = ds.offset + elem_offset * ds.vectorsize * ds.datasize;
-                    let byte_len = elem_count * ds.vectorsize * ds.datasize;
-                    assert!(byte_offset + byte_len <= self.memmap.len(), "Out-of-bounds");
-                    let src = &self.memmap[byte_offset..byte_offset + byte_len];
-                    dst_bytes.copy_from_slice(src);
-                };
-
-            let mut block_ids: Vec<u32> = vec![0; read_size];
-            {
-                let dst_bytes = bytemuck::cast_slice_mut::<u32, u8>(&mut block_ids);
-                read_chunk(&blockids, start_block, read_size, dst_bytes);
+            fn slice_ds(ds: &VlsvDataset, elem_offset: usize, elem_count: usize) -> VlsvDataset {
+                let mut sub = ds.clone();
+                sub.offset = ds.offset + elem_offset * ds.vectorsize * ds.datasize;
+                sub.arraysize = elem_count;
+                sub
             }
 
-            let mut blocks: Vec<f32> = vec![0.0; read_size * wid3];
-            {
-                let dst_bytes = bytemuck::cast_slice_mut::<f32, u8>(&mut blocks);
-                read_chunk(&blockvariable, start_block, read_size, dst_bytes);
-            }
+            // Read block data (T)
+            let mut block_ids: Vec<u32> = vec![0; read_size * blockids.vectorsize];
+            let blockids_slice = slice_ds(&blockids, start_block, read_size);
+            self.read_variable_into::<u32>(None, Some(blockids_slice), &mut block_ids);
+
+            let mut blocks: Vec<T> = vec![T::default(); read_size * blockvariable.vectorsize];
+            let blockvar_slice = slice_ds(&blockvariable, start_block, read_size);
+            self.read_variable_into::<T>(None, Some(blockvar_slice), &mut blocks);
 
             let id2ijk = |id: usize| -> (usize, usize, usize) {
                 let plane = mx * my;
-                assert!(id < plane * mz, "block_id out of bounds");
+                assert!(id < plane * mz, "GID out of bounds");
                 let k = id / plane;
                 let rem = id % plane;
                 let j = rem / mx;
@@ -605,25 +595,34 @@ pub mod vlsv_reader {
                 (i, j, k)
             };
 
-            let mut vdf = Array4::<f32>::zeros((nvx, nvy, nvz, 1));
+            let mut vdf = Array4::<T>::zeros((nvx, nvy, nvz, 1));
             for (block_idx, &bid_u32) in block_ids.iter().enumerate() {
                 let bid = bid_u32 as usize;
                 let (bi, bj, bk) = id2ijk(bid);
                 let block_buf = &blocks[block_idx * wid3..(block_idx + 1) * wid3];
+
                 for dk in 0..wid {
                     for dj in 0..wid {
                         for di in 0..wid {
                             let local_id = di + dj * wid + dk * wid * wid;
-                            let val = block_buf[local_id];
                             let gi = bi * wid + di;
                             let gj = bj * wid + dj;
                             let gk = bk * wid + dk;
-                            vdf[(gi, gj, gk, 0)] = val;
+                            vdf[(gi, gj, gk, 0)] = block_buf[local_id];
                         }
                     }
                 }
             }
             Some(vdf)
+        }
+
+        pub fn read_variable<T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag>(
+            &self,
+            name: &str,
+            op: Option<i32>,
+        ) -> Option<ndarray::Array4<T>> {
+            self.read_fsgrid_variable::<T>(name, op)
+                .or_else(|| self.read_vg_variable_as_fg::<T>(name, op))
         }
     }
 
@@ -919,6 +918,11 @@ pub mod vlsv_reader {
         type Error = String;
 
         fn try_from(var: &Variable) -> Result<Self, Self::Error> {
+            let g = if let Some(v) = &var.mesh {
+                Some(v.parse::<VlasiatorGrid>()?)
+            } else {
+                None
+            };
             Ok(Self {
                 offset: var
                     .offset
@@ -949,6 +953,7 @@ pub mod vlsv_reader {
                     .map_err(|e| format!("Invalid datasize: {}", e))?,
 
                 datatype: var.datatype.as_ref().ok_or("Missing datatype")?.clone(),
+                grid: g,
             })
         }
     }
@@ -957,6 +962,11 @@ pub mod vlsv_reader {
         type Error = String;
 
         fn try_from(var: Variable) -> Result<Self, Self::Error> {
+            let g = if let Some(v) = var.mesh {
+                Some(v.parse::<VlasiatorGrid>()?)
+            } else {
+                None
+            };
             Ok(Self {
                 offset: var
                     .offset
@@ -987,7 +997,29 @@ pub mod vlsv_reader {
                     .map_err(|e| format!("Invalid datasize: {}", e))?,
 
                 datatype: var.datatype.clone().ok_or("Missing datatype")?,
+                grid: g,
             })
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum VlasiatorGrid {
+        FSGRID,
+        SPATIALGRID,
+        VMESH,
+        IONOSPHERE,
+    }
+
+    impl FromStr for VlasiatorGrid {
+        type Err = String;
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            match s.to_ascii_uppercase().as_str() {
+                "FSGRID" => Ok(VlasiatorGrid::FSGRID),
+                "SPATIALGRID" => Ok(VlasiatorGrid::SPATIALGRID),
+                "IONOSPHERE" => Ok(VlasiatorGrid::IONOSPHERE),
+                "PROTON" => Ok(VlasiatorGrid::VMESH),
+                other => panic!("Unknown VlasiatorGrid type: {}", other),
+            }
         }
     }
 
