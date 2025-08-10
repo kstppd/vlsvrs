@@ -32,13 +32,13 @@ pub mod vlsv_reader {
 
     impl VlsvFile {
         pub fn new(filename: &str) -> Result<Self, Box<dyn std::error::Error>> {
-            let f = std::fs::File::open(filename)?;
-            let mmap = unsafe { Mmap::map(&f)? };
-            let footer_offset =
-                usize::from_ne_bytes(mmap[VLSV_FOOTER_LOC_START..VLSV_FOOTER_LOC_END].try_into()?)
-                    as usize;
-            let xml_string = std::str::from_utf8(&mmap[footer_offset..])?.to_string();
-
+            let mmap = unsafe { Mmap::map(&std::fs::File::open(filename)?)? };
+            let xml_string = {
+                let footer_offset: usize = usize::from_ne_bytes(
+                    mmap[VLSV_FOOTER_LOC_START..VLSV_FOOTER_LOC_END].try_into()?,
+                );
+                std::str::from_utf8(&mmap[footer_offset..])?.to_string()
+            };
             let root: VlsvRoot = serde_xml_rs::from_str(&xml_string)?;
 
             let vars: HashMap<String, Variable> = root
@@ -77,12 +77,6 @@ pub mod vlsv_reader {
                 memmap: mmap,
                 root,
             })
-        }
-
-        pub fn print_variables(&self) {
-            for key in self.variables.keys() {
-                println!("{}", key);
-            }
         }
 
         pub fn read_scalar_parameter(&self, name: &str) -> Option<f64> {
@@ -130,13 +124,8 @@ pub mod vlsv_reader {
                 info.offset + expected_bytes <= self.memmap.len(),
                 "Attempt to read out-of-bounds from memory map"
             );
-            let src_bytes = &self.memmap[info.offset..info.offset + expected_bytes];
-            let mut buffer: Vec<u8> = Vec::with_capacity(info.arraysize);
-            unsafe {
-                buffer.set_len(info.arraysize);
-            }
-            buffer.copy_from_slice(cast_slice(src_bytes));
-            let cfgfile = String::from_utf8(buffer).unwrap();
+            let bytes = &self.memmap[info.offset..info.offset + expected_bytes];
+            let cfgfile = std::str::from_utf8(bytes).map(|s| s.to_owned()).ok()?;
             Some(cfgfile)
         }
 
@@ -148,14 +137,9 @@ pub mod vlsv_reader {
                 info.offset + expected_bytes <= self.memmap.len(),
                 "Attempt to read out-of-bounds from memory map"
             );
-            let src_bytes = &self.memmap[info.offset..info.offset + expected_bytes];
-            let mut buffer: Vec<u8> = Vec::with_capacity(info.arraysize);
-            unsafe {
-                buffer.set_len(info.arraysize);
-            }
-            buffer.copy_from_slice(cast_slice(src_bytes));
-            let cfgfile = String::from_utf8(buffer).unwrap();
-            Some(cfgfile)
+            let bytes = &self.memmap[info.offset..info.offset + expected_bytes];
+            let version = std::str::from_utf8(bytes).map(|s| s.to_owned()).ok()?;
+            Some(version)
         }
 
         fn read_variable_into<T: Sized + Pod + TypeTag>(
