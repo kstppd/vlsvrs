@@ -1,7 +1,10 @@
 /*
 File: vlsv_reader.rs
-Author: Kostis Papadakis 2024/2025 (kpapadakis@protonmail.com)
-Licence: Open so go build a startup and become a billionaire!
+Copyright (C) 2025 Kostis Papadakis 2024/2025 (kpapadakis@protonmail.com)
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
 
 This is a set of tools written mainly for fun but also for
 some projects in Vlasiator (Asterix, Faiser...).
