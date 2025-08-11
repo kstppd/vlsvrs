@@ -14,6 +14,17 @@ Toinstall the C bindings system-wide (headers and `vlsvrs` library):
 ./install.sh
 cc main.c $(pkg-config --cflags --libs vlsvrs)
 ```
+And now you can use
+```c
+float *read_var_32(const char *filename, const char *varname, size_t *nx,
+                   size_t *ny, size_t *nz, size_t *nc, int op);
+double *read_var_64(const char *filename, const char *varname, size_t *nx,
+                    size_t *ny, size_t *nz, size_t *nc, int op);
+float *read_vdf_32(const char *filename, const char *population, size_t cid,
+                   size_t *nx, size_t *ny, size_t *nz);
+double *read_vdf_64(const char *filename, const char *population, size_t cid,
+                   size_t *nx, size_t *ny, size_t *nz);
+```
 
 ## Python Bindings
 Install [maturin](https://github.com/PyO3/maturin):
@@ -25,6 +36,7 @@ maturin build --release --features with_bindings
 Now you can do:
 ```python
 import vlsvrs
+f=vlsvrs.VlsvFile("bulk.vlsv")
 ```
 
 ## EXAMPLES
