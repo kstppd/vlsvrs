@@ -6,6 +6,26 @@ A very very nice thing here is that we can actually read
 in a VDF into a dense mesh (we can also remap the VDF to a target mesh)
 which is handy for training neural nets.
 
+## C Bindings
+
+Toinstall the C bindings system-wide (headers and `vlsvrs` library):
+
+```bash
+./install.sh
+cc main.c $(pkg-config --cflags --libs vlsvrs)
+```
+
+## Python Bindings
+Install [maturin](https://github.com/PyO3/maturin):
+
+```bash
+pip install maturin
+maturin build --release --features with_bindings
+```
+Now you can do:
+```python
+import vlsvrs
+```
 
 ## EXAMPLES
 ```rust
