@@ -1851,55 +1851,77 @@ pub mod mod_vlsv_c_exports {
     use ndarray::Array4;
     use std::ffi::CStr;
     use std::os::raw::c_char;
+
+    #[repr(C)]
+    pub struct Grid<T> {
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        nc: usize,
+        xmin: f64,
+        ymin: f64,
+        zmin: f64,
+        xmax: f64,
+        ymax: f64,
+        zmax: f64,
+        data: *mut T,
+    }
+
+    impl<T> Grid<T> {
+        pub fn new(
+            meshsize: (usize, usize, usize, usize),
+            extents: (f64, f64, f64, f64, f64, f64),
+            data: *mut T,
+        ) -> Self {
+            Self {
+                nx: meshsize.0,
+                ny: meshsize.1,
+                nz: meshsize.2,
+                nc: meshsize.3,
+                xmin: extents.0,
+                ymin: extents.1,
+                zmin: extents.2,
+                xmax: extents.3,
+                ymax: extents.4,
+                zmax: extents.5,
+                data,
+            }
+        }
+    }
+
     /************************* C Bindings *********************************/
     #[unsafe(export_name = "read_var_32")]
     pub unsafe fn read_var_32(
         filename: *const c_char,
         varname: *const c_char,
-        nx: *mut usize,
-        ny: *mut usize,
-        nz: *mut usize,
-        nc: *mut usize,
         op: i32,
-    ) -> *mut f32 {
+    ) -> Grid<f32> {
         let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
         let var = unsafe { CStr::from_ptr(varname).to_str().unwrap() };
-        let var: Array4<f32> = VlsvFile::new(name)
-            .unwrap()
-            .read_variable::<f32>(var, Some(op))
-            .unwrap();
-        unsafe {
-            (*nx, *ny, *nz, *nc) = var.dim();
-        }
+        let f = VlsvFile::new(name).unwrap();
+        let var: Array4<f32> = f.read_variable::<f32>(var, Some(op)).unwrap();
+        let dims = var.dim();
         let mut vec = var.into_raw_vec_and_offset().0;
         let ptr = vec.as_mut_ptr();
         std::mem::forget(vec);
-        ptr
+        Grid::<f32>::new(dims, f.get_spatial_mesh_extents().unwrap(), ptr)
     }
 
     #[unsafe(export_name = "read_var_64")]
     pub unsafe fn read_var_64(
         filename: *const c_char,
         varname: *const c_char,
-        nx: *mut usize,
-        ny: *mut usize,
-        nz: *mut usize,
-        nc: *mut usize,
         op: i32,
-    ) -> *mut f64 {
+    ) -> Grid<f64> {
         let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
         let var = unsafe { CStr::from_ptr(varname).to_str().unwrap() };
-        let var: Array4<f64> = VlsvFile::new(name)
-            .unwrap()
-            .read_variable::<f64>(var, Some(op))
-            .unwrap();
-        unsafe {
-            (*nx, *ny, *nz, *nc) = var.dim();
-        }
+        let f = VlsvFile::new(name).unwrap();
+        let var: Array4<f64> = f.read_variable::<f64>(var, Some(op)).unwrap();
+        let dims = var.dim();
         let mut vec = var.into_raw_vec_and_offset().0;
         let ptr = vec.as_mut_ptr();
         std::mem::forget(vec);
-        ptr
+        Grid::<f64>::new(dims, f.get_spatial_mesh_extents().unwrap(), ptr)
     }
 
     #[unsafe(export_name = "read_vdf_32")]
@@ -1907,23 +1929,16 @@ pub mod mod_vlsv_c_exports {
         filename: *const c_char,
         pop: *const c_char,
         cid: usize,
-        nx: *mut usize,
-        ny: *mut usize,
-        nz: *mut usize,
-    ) -> *mut f32 {
+    ) -> Grid<f32> {
         let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
         let pop = unsafe { CStr::from_ptr(pop).to_str().unwrap() };
-        let var: Array4<f32> = VlsvFile::new(name)
-            .unwrap()
-            .read_vdf::<f32>(cid, pop)
-            .unwrap();
-        unsafe {
-            (*nx, *ny, *nz, _) = var.dim();
-        }
+        let f = VlsvFile::new(name).unwrap();
+        let var: Array4<f32> = f.read_vdf::<f32>(cid, pop).unwrap();
+        let dims = var.dim();
         let mut vec = var.into_raw_vec_and_offset().0;
         let ptr = vec.as_mut_ptr();
         std::mem::forget(vec);
-        ptr
+        Grid::<f32>::new(dims, f.get_vspace_mesh_extents(pop).unwrap(), ptr)
     }
 
     #[unsafe(export_name = "read_vdf_64")]
@@ -1931,23 +1946,16 @@ pub mod mod_vlsv_c_exports {
         filename: *const c_char,
         pop: *const c_char,
         cid: usize,
-        nx: *mut usize,
-        ny: *mut usize,
-        nz: *mut usize,
-    ) -> *mut f64 {
+    ) -> Grid<f64> {
         let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
         let pop = unsafe { CStr::from_ptr(pop).to_str().unwrap() };
-        let var: Array4<f64> = VlsvFile::new(name)
-            .unwrap()
-            .read_vdf::<f64>(cid, pop)
-            .unwrap();
-        unsafe {
-            (*nx, *ny, *nz, _) = var.dim();
-        }
+        let f = VlsvFile::new(name).unwrap();
+        let var: Array4<f64> = f.read_vdf::<f64>(cid, pop).unwrap();
+        let dims = var.dim();
         let mut vec = var.into_raw_vec_and_offset().0;
         let ptr = vec.as_mut_ptr();
         std::mem::forget(vec);
-        ptr
+        Grid::<f64>::new(dims, f.get_vspace_mesh_extents(pop).unwrap(), ptr)
     }
 }
 
