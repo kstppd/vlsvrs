@@ -12,9 +12,9 @@ Toinstall the C bindings system-wide (headers and `vlsvrs` library):
 
 ```bash
 ./install.sh
-cc main.c $(pkg-config --cflags --libs vlsvrs)
 ```
 And now you can use:
+
 ```c
 /*
 WARNING
