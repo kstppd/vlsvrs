@@ -1,10 +1,16 @@
 # VLSV Tools
 
-This is a set of tools written mainly for fun but also for
+Motivation:
+I hate all available methods of reading in VLSV files.
+FsGrid is dumped on disk unordered.
+SpatialGrid is hard to read because it has AMR.
+VDFs are hard to read because they are sparse.
+No more! So vlsvrs is a set of tools written mainly for fun but also for
 some projects in Vlasiator (Asterix, Faiser...).
 A very very nice thing here is that we can actually read
 in a VDF into a dense mesh (we can also remap the VDF to a target mesh)
-which is handy for training neural nets.
+which is handy for training neural nets. And it can just read all you need
+with a simple call. And it is not python!
 
 ## C Bindings
 
