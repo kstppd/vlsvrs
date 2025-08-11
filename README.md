@@ -12,6 +12,8 @@ in a VDF into a dense mesh (we can also remap the VDF to a target mesh)
 which is handy for training neural nets. And it can just read all you need
 with a simple call. And it is not python!
 
+This package is written in rust, so you will need [cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
+
 ## C Bindings
 
 Toinstall the C bindings system-wide (headers and `vlsvrs` library):
@@ -62,7 +64,7 @@ Install [maturin](https://github.com/PyO3/maturin):
 
 ```bash
 pip install maturin
-maturin build --release --features with_bindings
+maturin develop -F with_bindings --release
 ```
 Now you can do:
 ```python
