@@ -8,7 +8,6 @@ type, bind(C) :: Grid32
     type(c_ptr)       :: data
 end type Grid32
 
-
 type, bind(C) :: Grid64
     integer(c_size_t) :: nx, ny, nz, nc
     real(8)           :: xmin, ymin, zmin, xmax, ymax, zmax
@@ -40,6 +39,12 @@ interface
         character(len=1, kind=C_char), dimension(*), intent(in) :: filename, population
         integer(c_size_t), value, intent(in) :: cid
     end function read_vdf_64
+    
+    real(8) function read_scalar_parameter(filename, parameter) bind(C, name = "read_scalar_parameter")
+        import :: Grid32, c_char
+        character(len=1, kind=C_char), dimension(*), intent(in) :: filename, parameter
+    end function read_scalar_parameter
+
 end interface 
 
 END MODULE vlsvrs
