@@ -1960,6 +1960,74 @@ pub mod mod_vlsv_c_exports {
         std::mem::forget(vec);
         Grid::<f64>::new(dims, f.get_vspace_mesh_extents(pop).unwrap(), ptr)
     }
+
+    #[unsafe(export_name = "read_vdf_into_32")]
+    pub unsafe fn read_vdf_into_32(
+        filename: *const c_char,
+        pop: *const c_char,
+        cid: usize,
+        target: *mut Grid<f32>,
+    ) {
+        assert!(!target.is_null(), "target Grid is NULL");
+        let target: &mut Grid<f32> = unsafe { &mut *target };
+        let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
+        let pop = unsafe { CStr::from_ptr(pop).to_str().unwrap() };
+        let f = VlsvFile::new(name).unwrap();
+        let mut vdf: Array4<f32> = Array4::<f32>::zeros((target.nx, target.ny, target.nz, 1));
+        let new_extents = (
+            target.xmin,
+            target.ymin,
+            target.zmin,
+            target.xmax,
+            target.ymax,
+            target.zmax,
+        );
+        f.read_vdf_into(cid, pop, &mut vdf, new_extents);
+        (target.nx, target.ny, target.nz, _) = vdf.dim();
+        let (mut vec, _) = vdf.into_raw_vec_and_offset();
+        let ptr = vec.as_mut_ptr();
+        target.data = ptr;
+        std::mem::forget(vec);
+    }
+
+    #[unsafe(export_name = "read_vdf_into_64")]
+    pub unsafe fn read_vdf_into_64(
+        filename: *const c_char,
+        pop: *const c_char,
+        cid: usize,
+        target: *mut Grid<f64>,
+    ) {
+        assert!(!target.is_null(), "target Grid is NULL");
+        let target: &mut Grid<f64> = unsafe { &mut *target };
+        let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
+        let pop = unsafe { CStr::from_ptr(pop).to_str().unwrap() };
+        let f = VlsvFile::new(name).unwrap();
+        let mut vdf: Array4<f64> = Array4::<f64>::zeros((target.nx, target.ny, target.nz, 1));
+        let new_extents = (
+            target.xmin,
+            target.ymin,
+            target.zmin,
+            target.xmax,
+            target.ymax,
+            target.zmax,
+        );
+        f.read_vdf_into(cid, pop, &mut vdf, new_extents);
+        (target.nx, target.ny, target.nz, _) = vdf.dim();
+        let (mut vec, _) = vdf.into_raw_vec_and_offset();
+        let ptr = vec.as_mut_ptr();
+        target.data = ptr;
+        std::mem::forget(vec);
+    }
+
+    #[unsafe(export_name = "read_scalar_parameter")]
+    pub unsafe fn read_scalar_parameter(filename: *const c_char, parameter: *const c_char) -> f64 {
+        let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
+        let parameter = unsafe { CStr::from_ptr(parameter).to_str().unwrap() };
+        VlsvFile::new(name)
+            .unwrap()
+            .read_scalar_parameter(parameter)
+            .expect("Could not read parameter {parameter} in {name}")
+    }
 }
 
 #[cfg(feature = "with_bindings")]
@@ -2022,6 +2090,10 @@ pub mod mod_vlsv_py_exports {
             self.inner.get_vspace_mesh_bbox(pop)
         }
 
+        fn get_vspace_mesh_extents(&self, pop: &str) -> Option<(f64, f64, f64, f64, f64, f64)> {
+            self.inner.get_vspace_mesh_extents(pop)
+        }
+
         fn read_variable_f32<'py>(
             &self,
             py: Python<'py>,
@@ -2072,6 +2144,100 @@ pub mod mod_vlsv_py_exports {
                 format!("VDF not found for cid={} pop='{}'", cid, pop),
             )?;
             Ok(arr.into_pyarray(py).to_owned().into())
+        }
+
+        fn read_vdf_f32_zoom<'py>(
+            &self,
+            py: Python<'py>,
+            cid: usize,
+            pop: &str,
+            scale_factor: f64,
+        ) -> PyResult<Py<PyArray4<f32>>> {
+            assert!(scale_factor > 0.0, "scale_factor must be > 0");
+
+            let new_extents = self.inner.get_vspace_mesh_extents(pop).unwrap();
+
+            let (nx, ny, nz) = {
+                let (nx0, ny0, nz0) = self.inner.get_vspace_mesh_bbox(pop).unwrap();
+                (
+                    ((nx0 as f64) / scale_factor).round() as usize,
+                    ((ny0 as f64) / scale_factor).round() as usize,
+                    ((nz0 as f64) / scale_factor).round() as usize,
+                )
+            };
+
+            let mut vdf: Array4<f32> = Array4::<f32>::zeros((nx, ny, nz, 1));
+            self.inner.read_vdf_into(cid, pop, &mut vdf, new_extents);
+            Ok(vdf.into_pyarray(py).to_owned().into())
+        }
+
+        fn read_vdf_f64_zoom<'py>(
+            &self,
+            py: Python<'py>,
+            cid: usize,
+            pop: &str,
+            scale_factor: f64,
+        ) -> PyResult<Py<PyArray4<f64>>> {
+            assert!(scale_factor > 0.0, "scale_factor must be > 0");
+
+            let new_extents = self.inner.get_vspace_mesh_extents(pop).unwrap();
+
+            let (nx, ny, nz) = {
+                let (nx0, ny0, nz0) = self.inner.get_vspace_mesh_bbox(pop).unwrap();
+                (
+                    ((nx0 as f64) / scale_factor).round() as usize,
+                    ((ny0 as f64) / scale_factor).round() as usize,
+                    ((nz0 as f64) / scale_factor).round() as usize,
+                )
+            };
+
+            let mut vdf: Array4<f64> = Array4::<f64>::zeros((nx, ny, nz, 1));
+            self.inner.read_vdf_into(cid, pop, &mut vdf, new_extents);
+            Ok(vdf.into_pyarray(py).to_owned().into())
+        }
+
+        fn read_vdf_into_f32<'py>(
+            &self,
+            py: Python<'py>,
+            cid: usize,
+            pop: &str,
+            nx: usize,
+            ny: usize,
+            nz: usize,
+            vxmin: f64,
+            vymin: f64,
+            vzmin: f64,
+            vxmax: f64,
+            vymax: f64,
+            vzmax: f64,
+        ) -> PyResult<Py<PyArray4<f32>>> {
+            // assert!(!target.is_null(), "target Grid is NULL");
+            // let target: &mut Grid<f32> = unsafe { &mut *target };
+            let mut vdf: Array4<f32> = Array4::<f32>::zeros((nx, ny, nz, 1));
+            let new_extents = (vxmin, vymin, vzmin, vxmax, vymax, vzmax);
+            self.inner.read_vdf_into(cid, pop, &mut vdf, new_extents);
+            Ok(vdf.into_pyarray(py).to_owned().into())
+        }
+
+        fn read_vdf_into_f64<'py>(
+            &self,
+            py: Python<'py>,
+            cid: usize,
+            pop: &str,
+            nx: usize,
+            ny: usize,
+            nz: usize,
+            vxmin: f64,
+            vymin: f64,
+            vzmin: f64,
+            vxmax: f64,
+            vymax: f64,
+            vzmax: f64,
+        ) -> PyResult<Py<PyArray4<f64>>> {
+            let mut vdf: Array4<f64> = Array4::<f64>::zeros((nx, ny, nz, 1));
+            let new_extents = (vxmin, vymin, vzmin, vxmax, vymax, vzmax);
+            self.inner.read_vdf_into(cid, pop, &mut vdf, new_extents);
+            Ok(vdf.into_pyarray(py).to_owned().into())
         }
     }
 
