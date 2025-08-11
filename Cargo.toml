@@ -1,7 +1,13 @@
 [package]
 name = "vlsvrs"
-version = "0.1.0"
+version = "0.5.0"
 edition = "2024"
+license = "GPL-2.0-or-later"
+readme = "README.md"
+repository = "https://github.com/kstppd/vlsvrs"
+description = "VLSV reader with C and Python bindings"
+keywords = ["vlasiator","vlsv","plasma","vdf","hpc"]
+categories = ["simulation","parsing","data-structures"]
 
 [dependencies]
 bytemuck = "1.22.0"
