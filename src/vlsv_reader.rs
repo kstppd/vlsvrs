@@ -1846,15 +1846,9 @@ pub mod mod_vlsv_tracing {
     }
 }
 
-#[cfg(feature = "with_bindings")]
-pub mod mod_vlsv_exports {
+pub mod mod_vlsv_c_exports {
     use super::mod_vlsv_reader::VlsvFile;
     use ndarray::Array4;
-    use numpy::{IntoPyArray, PyArray4};
-    use pyfunction;
-    use pyo3::exceptions::{PyIOError, PyValueError};
-    use pyo3::prelude::*;
-    use pyo3::wrap_pyfunction;
     use std::ffi::CStr;
     use std::os::raw::c_char;
     /************************* C Bindings *********************************/
@@ -1955,7 +1949,17 @@ pub mod mod_vlsv_exports {
         std::mem::forget(vec);
         ptr
     }
+}
 
+#[cfg(feature = "with_bindings")]
+pub mod mod_vlsv_py_exports {
+    use super::mod_vlsv_reader::VlsvFile;
+    use ndarray::Array4;
+    use numpy::{IntoPyArray, PyArray4};
+    use pyfunction;
+    use pyo3::exceptions::{PyIOError, PyValueError};
+    use pyo3::prelude::*;
+    use pyo3::wrap_pyfunction;
     //********************* Python Bindings **************************
 
     fn map_opt<T, E>(o: Option<T>, msg: E) -> PyResult<T>
