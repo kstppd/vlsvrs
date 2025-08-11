@@ -36,7 +36,7 @@ path="src/vlsv_ptr.rs"
 [lib]
 name = "vlsvrs"
 path = "src/vlsv_reader.rs"
-crate-type = ["staticlib", "cdylib"]
+crate-type = ["staticlib", "cdylib","rlib"]
 
 [features]
 default = []
