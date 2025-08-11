@@ -28,10 +28,27 @@ Grid64 read_vdf_64(const char *filename, const char *population, size_t cid);
 ```
 Example usage in C:
 ```c
-Grid32 read_var_32(const char *filename, const char *varname, int op);
-Grid64 read_var_64(const char *filename, const char *varname, int op);
-Grid32 read_vdf_32(const char *filename, const char *population, size_t cid);
-Grid64 read_vdf_64(const char *filename, const char *population, size_t cid);
+// gcc main.c -Wall -Wextra -O3 -lvlsvrs -o bin && ./bin
+#include "stdlib.h"
+#include "vlsvrs.h"
+#include <stdio.h>
+
+int main() {
+  Grid32 vdf1 =
+      read_vdf_32("/home/kstppd/backups/kstppd/tsi.vlsv", "proton", 256);
+  Grid64 vdf2 =
+      read_vdf_64("/home/kstppd/backups/kstppd/tsi.vlsv", "proton", 256);
+
+  printf("VDF1 with shape [%zu,%zu,%zu] extents[%f,%f,%f,%f,%f,%f] @%p\n",
+         vdf1.nx, vdf1.ny, vdf1.nz, vdf1.xmin, vdf1.ymin, vdf1.zmin, vdf1.xmax,
+         vdf1.ymax, vdf1.zmax, vdf1.data);
+  printf("VDF2 with shape [%zu,%zu,%zu] extents[%f,%f,%f,%f,%f,%f] @%p\n",
+         vdf2.nx, vdf2.ny, vdf2.nz, vdf2.xmin, vdf2.ymin, vdf2.zmin, vdf2.xmax,
+         vdf2.ymax, vdf2.zmax, vdf2.data);
+  printf("Hello World!\n");
+  free(vdf1.data);
+  free(vdf2.data);
+}
 ```
 
 ## Python Bindings
