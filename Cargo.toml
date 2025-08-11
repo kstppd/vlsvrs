@@ -15,7 +15,7 @@ numpy = "0.25.0"
 pyo3 = {version="0.25.1",features =["extension-module"]}
 rand = "0.9.0"
 rand_distr = "0.5.1"
-raylib = "5.5.1"
+# raylib = "5.5.1"
 rayon = "1.10.0"
 regex = "1.11.1"
 serde = { version = "1.0", features = ["derive"] }
@@ -29,9 +29,9 @@ path="src/vlsv_dump.rs"
 name="vlsv_ptr"
 path="src/vlsv_ptr.rs"
 
-[[bin]]
-name="vlsv_view"
-path="src/vlsv_view.rs"
+# [[bin]]
+# name="vlsv_view"
+# path="src/vlsv_view.rs"
 
 [lib]
 name = "vlsvrs"
