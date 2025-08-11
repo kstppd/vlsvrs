@@ -59,6 +59,43 @@ int main() {
 }
 ```
 
+## FORTRAN bindings
+
+To install:
+
+```{bash}
+./install.sh 
+gfortran vlsvrs.f90 -c -O3
+```
+
+### Example
+
+```{fortran}
+PROGRAM main
+    USE vlsvrs
+    use iso_c_binding, only : c_null_char
+    IMPLICIT NONE
+    type(Grid32) :: data
+    integer(8) :: i
+    data = read_var_32(TRIM("tsi.vlsv")//c_null_char, TRIM("vg_b_vol")//c_null_char, 0)
+
+    WRITE (*, *) data%nx, data%ny, data%nz
+
+    i = 256
+    data = read_vdf_32(TRIM("tsi.vlsv")//c_null_char, TRIM("proton")//c_null_char, i)
+    WRITE (*, *) data%nx, data%ny, data%nz
+END PROGRAM
+```
+
+Which can be compiled via:
+
+```{bash}
+gfortran vlsvrs.mod main.f90 -Wall -Wextra -Wno-conversion -Wno-c-binding-type -lvlsvrs -o bin
+```
+
+
+The module is built into the `./fortran_bindings` folder. Note the signatures: integer kind is 8 for cell id, and strings in fortran vs c are a bit of black magic, requiring null chars and trim. 
+
 ## Python Bindings
 Install [maturin](https://github.com/PyO3/maturin):
 
