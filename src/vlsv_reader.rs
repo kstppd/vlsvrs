@@ -49,7 +49,6 @@ There are 3 main parts here:
 pub mod mod_vlsv_reader {
     const VLSV_FOOTER_LOC_START: usize = 8;
     const VLSV_FOOTER_LOC_END: usize = 16;
-    const FS_STENCIL: usize = 2;
     use bytemuck::{Pod, cast_slice};
     use core::convert::TryInto;
     use memmap2::Mmap;
@@ -58,7 +57,6 @@ pub mod mod_vlsv_reader {
     use num_traits::{Num, NumCast, Zero};
     use regex::Regex;
     use serde::Deserialize;
-    use std::cmp::min;
     use std::{collections::HashMap, str::FromStr};
     extern crate libc;
 
@@ -80,7 +78,6 @@ pub mod mod_vlsv_reader {
         pub xml: String,
         pub memmap: Mmap,
         pub root: VlsvRoot,
-        dd: Option<[usize; 3]>,
     }
 
     impl VlsvFile {
@@ -93,25 +90,6 @@ pub mod mod_vlsv_reader {
                 std::str::from_utf8(&mmap[footer_offset..])?.to_string()
             };
             let root: VlsvRoot = serde_xml_rs::from_str(&xml_string)?;
-
-            //If decomposition is not in the file we compute and cache it
-            let dd: Option<[usize; 3]> = if root
-                .mesh_decomposition
-                .as_ref()
-                .and_then(|v| v.first())
-                .cloned()
-                .and_then(|v| TryInto::<VlsvDataset>::try_into(v).ok())
-                .is_none()
-            {
-                eprintln!(
-                    "Domain decomposition could not be found in {filename}. One has been computed now!"
-                );
-                let (bbox, ntasks) = get_some_meta_at_init(&root, &mmap)
-                    .expect("Could read stuff needed for domain decompotion");
-                compute_domain_decomposition(bbox, ntasks, FS_STENCIL)
-            } else {
-                None
-            };
 
             let vars: HashMap<String, Variable> = root
                 .variables
@@ -148,7 +126,6 @@ pub mod mod_vlsv_reader {
                 xml: xml_string,
                 memmap: mmap,
                 root,
-                dd,
             })
         }
 
@@ -420,9 +397,6 @@ pub mod mod_vlsv_reader {
         }
 
         pub fn get_domain_decomposition(&self) -> Option<[usize; 3]> {
-            if let Some(dd) = self.dd {
-                return Some(dd);
-            }
             let mut decomp: [i32; 3] = [0; 3];
             let decomposition: VlsvDataset = self
                 .root
@@ -908,173 +882,6 @@ pub mod mod_vlsv_reader {
             }
             _ => panic!("Unknown operator"),
         }
-    }
-
-    fn get_some_meta_at_init(root: &VlsvRoot, memmap: &Mmap) -> Option<([usize; 3], usize)> {
-        fn _read_scalar_parameter(info: VlsvDataset, memmap: &Mmap) -> Option<f64> {
-            let expected_bytes = info.datasize * info.vectorsize;
-            assert!(
-                info.offset + expected_bytes <= memmap.len(),
-                "Attempt to read out-of-bounds from memory map"
-            );
-            let src_bytes = &memmap[info.offset..info.offset + expected_bytes];
-            let retval = match info.datasize {
-                8 => {
-                    let mut buffer: [u8; 8] = [0; 8];
-                    buffer.copy_from_slice(cast_slice(src_bytes));
-
-                    match info.datatype.as_str() {
-                        "float" => f64::from_ne_bytes(buffer),
-                        "uint" => usize::from_ne_bytes(buffer) as f64,
-                        "int" => i64::from_ne_bytes(buffer) as f64,
-                        _ => panic!("Only matched against uint and float"),
-                    }
-                }
-                4 => {
-                    let mut buffer: [u8; 4] = [0; 4];
-                    buffer.copy_from_slice(cast_slice(src_bytes));
-                    match info.datatype.as_str() {
-                        "float" => f32::from_ne_bytes(buffer) as f64,
-                        "uint" => u32::from_ne_bytes(buffer) as f64,
-                        "int" => i32::from_ne_bytes(buffer) as f64,
-                        _ => panic!("Only matched against uint and float"),
-                    }
-                }
-                _ => panic!("Did not expect data size found!"),
-            };
-            Some(retval)
-        }
-
-        let xcells_ini_info = TryInto::<VlsvDataset>::try_into(
-            root.mesh_bbox
-                .as_ref()
-                .unwrap()
-                .iter()
-                .find(|v| v.name.as_deref() == Some("xcells_ini"))
-                .unwrap(),
-        )
-        .unwrap();
-        let ycells_ini_info = TryInto::<VlsvDataset>::try_into(
-            root.mesh_bbox
-                .as_ref()
-                .unwrap()
-                .iter()
-                .find(|v| v.name.as_deref() == Some("ycells_ini"))
-                .unwrap(),
-        )
-        .unwrap();
-        let zcells_ini_info = TryInto::<VlsvDataset>::try_into(
-            root.mesh_bbox
-                .as_ref()
-                .unwrap()
-                .iter()
-                .find(|v| v.name.as_deref() == Some("zcells_ini"))
-                .unwrap(),
-        )
-        .unwrap();
-        let max_amr = root
-            .mesh
-            .as_ref()
-            .and_then(|meshes| {
-                meshes
-                    .iter()
-                    .find_map(|v| v.max_refinement_level.as_ref()?.parse::<u32>().ok())
-            })
-            .unwrap();
-        let tasks = TryInto::<VlsvDataset>::try_into(
-            root.mesh_bbox
-                .as_ref()
-                .unwrap()
-                .iter()
-                .find(|v| v.name.as_deref() == Some("numWritingRanks"))
-                .unwrap(),
-        )
-        .unwrap();
-
-        let mut nx = _read_scalar_parameter(xcells_ini_info, memmap).unwrap() as usize;
-        let mut ny = _read_scalar_parameter(ycells_ini_info, memmap).unwrap() as usize;
-        let mut nz = _read_scalar_parameter(zcells_ini_info, memmap).unwrap() as usize;
-        let ntasks = _read_scalar_parameter(tasks, memmap).unwrap() as usize;
-        nx *= usize::pow(2, max_amr);
-        ny *= usize::pow(2, max_amr);
-        nz *= usize::pow(2, max_amr);
-        Some(([nx, ny, nz], ntasks))
-    }
-
-    // Port of fsgrid domain decomp
-    fn compute_domain_decomposition(
-        global_size: [usize; 3],
-        n_procs: usize,
-        stencil_size: usize,
-    ) -> Option<[usize; 3]> {
-        fn calc_local_size(dim: usize, n_procs: usize, offset: usize) -> usize {
-            dim / n_procs + if offset == 0 { 1 } else { 0 }
-        }
-
-        let mut system_dim = [0, 0, 0];
-        let mut process_box = [0, 0, 0];
-        let mut min_domain_size = [0, 0, 0];
-        let mut optim_value = usize::MAX;
-        let mut scored_decompositions = vec![(optim_value, [0, 0, 0])];
-
-        for i in 0..3 {
-            system_dim[i] = global_size[i];
-            min_domain_size[i] = if global_size[i] == 1 { 1 } else { stencil_size };
-        }
-        for i in 1..=min(n_procs, global_size[0] / min_domain_size[0]) {
-            for j in 1..=min(n_procs, global_size[1] / min_domain_size[1]) {
-                if i * j > n_procs {
-                    break;
-                }
-
-                let k = n_procs / (i * j);
-                if i * j * k != n_procs || k > global_size[2] / min_domain_size[2] {
-                    continue;
-                }
-
-                process_box[0] = calc_local_size(system_dim[0], i, 0);
-                process_box[1] = calc_local_size(system_dim[1], j, 0);
-                process_box[2] = calc_local_size(system_dim[2], k, 0);
-
-                let mut value = if i > 1 {
-                    process_box[1] * process_box[2]
-                } else {
-                    0
-                } + if j > 1 {
-                    process_box[0] * process_box[2]
-                } else {
-                    0
-                } + if k > 1 {
-                    process_box[0] * process_box[1]
-                } else {
-                    0
-                };
-
-                if i != 1 && j != 1 && k != 1 {
-                    value *= 13;
-                } else if i == 1 && j != 1 && k != 1
-                    || i != 1 && j == 1 && k != 1
-                    || i != 1 && j != 1 && k == 1
-                {
-                    value *= 4;
-                }
-
-                if value <= optim_value {
-                    optim_value = value;
-                    if value < scored_decompositions.last().unwrap().0 {
-                        scored_decompositions.clear();
-                    }
-                    scored_decompositions.push((value, [i, j, k]));
-                }
-            }
-        }
-        let process_domain_decomposition = scored_decompositions[0].1;
-        if optim_value == usize::MAX
-            || process_domain_decomposition.iter().product::<usize>() != n_procs
-        {
-            return None;
-        }
-        Some(process_domain_decomposition)
     }
 
     fn cid2ijk(cid: u64, nx: usize, ny: usize) -> (usize, usize, usize) {
