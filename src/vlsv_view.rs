@@ -110,6 +110,8 @@ fn main() {
         })
         .unwrap();
 
+    println!("{:?}", data.dim());
+    return;
     if needs_log_scaling {
         let eps = 1e-30;
         data.mapv_inplace(|v| (v + eps).log10());

@@ -52,8 +52,8 @@ pub mod mod_vlsv_reader {
     use bytemuck::{Pod, cast_slice};
     use core::convert::TryInto;
     use memmap2::Mmap;
-    use ndarray::Array4;
-    use ndarray::{Array3, Axis, Order, s};
+    use ndarray::{Array4, ArrayView1};
+    use ndarray::{Axis, Order, s};
     use num_traits::{Num, NumCast, Zero};
     use regex::Regex;
     use serde::Deserialize;
@@ -462,10 +462,12 @@ pub mod mod_vlsv_reader {
             let z0 = self.read_scalar_parameter("zcells_ini")? as usize;
             let lmax = self.get_max_amr_refinement()?;
             let cellid_ds = self.get_dataset("CellID")?;
-            let mut cell_ids = vec![0u64; cellid_ds.arraysize];
+            let mut cell_ids = Vec::<u64>::with_capacity(cellid_ds.arraysize);
+            unsafe { cell_ids.set_len(cellid_ds.arraysize) };
             self.read_variable_into::<u64>(None, Some(cellid_ds), &mut cell_ids);
             let n_cells = info.arraysize;
-            let mut vg_rows = vec![T::default(); n_cells * vecsz];
+            let mut vg_rows = Vec::<T>::with_capacity(n_cells * vecsz);
+            unsafe { vg_rows.set_len(n_cells * vecsz) };
             self.read_variable_into::<T>(None, Some(info), vg_rows.as_mut_slice());
             let mut ordered_var = vg_variable_to_fg(&cell_ids, &vg_rows, vecsz, x0, y0, z0, lmax);
             apply_op_in_place::<T>(&mut ordered_var, op);
@@ -884,14 +886,6 @@ pub mod mod_vlsv_reader {
         }
     }
 
-    fn cid2ijk(cid: u64, nx: usize, ny: usize) -> (usize, usize, usize) {
-        let lin = (cid - 1) as usize;
-        let i = lin % nx;
-        let j = (lin / nx) % ny;
-        let k = lin / (nx * ny);
-        (i, j, k)
-    }
-
     fn amr_level(cellid: u64, x0: usize, y0: usize, z0: usize, lmax: u32) -> Option<u32> {
         let n0 = (x0 as u64) * (y0 as u64) * (z0 as u64);
         let mut cum = 0u64;
@@ -932,34 +926,6 @@ pub mod mod_vlsv_reader {
         Some((i_l * scale, j_l * scale, k_l * scale))
     }
 
-    pub fn build_vg_indexes_on_fg(
-        cell_ids: &[u64],
-        fg_dims: (usize, usize, usize),
-        x0: usize,
-        y0: usize,
-        z0: usize,
-        lmax: u32,
-    ) -> Array3<usize> {
-        let (fx, fy, fz) = fg_dims;
-        assert_eq!(fx, x0 << lmax);
-        assert_eq!(fy, y0 << lmax);
-        assert_eq!(fz, z0 << lmax);
-
-        let mut map = Array3::<usize>::from_elem((fx, fy, fz), usize::MAX);
-        for (vg_idx, &cid) in cell_ids.iter().enumerate() {
-            let lvl = amr_level(cid, x0, y0, z0, lmax).expect("Invalid CellID or max level");
-            let (sx, sy, sz) =
-                cid2fineijk(cid, lvl, lmax, x0, y0, z0).expect("Failed to map CellID to fine ijk");
-            let scale = 1usize << (lmax - lvl) as usize;
-            let ex = sx + scale;
-            let ey = sy + scale;
-            let ez = sz + scale;
-            assert!(ex <= fx && ey <= fy && ez <= fz);
-            map.slice_mut(s![sx..ex, sy..ey, sz..ez]).fill(vg_idx);
-        }
-        map
-    }
-
     pub fn vg_variable_to_fg<T: bytemuck::Pod + Copy + Default>(
         cell_ids: &[u64],
         vg_rows: &[T],
@@ -969,7 +935,6 @@ pub mod mod_vlsv_reader {
         z0: usize,
         lmax: u32,
     ) -> ndarray::Array4<T> {
-        use ndarray::{Array4, s};
         let (fx, fy, fz) = (x0 << lmax, y0 << lmax, z0 << lmax);
         let mut fg = Array4::<T>::default((fx, fy, fz, vecsz));
         assert_eq!(vg_rows.len(), cell_ids.len() * vecsz);
@@ -978,18 +943,10 @@ pub mod mod_vlsv_reader {
             let lvl = amr_level(cid, x0, y0, z0, lmax).expect("bad CellID/levels");
             let (sx, sy, sz) = cid2fineijk(cid, lvl, lmax, x0, y0, z0).unwrap();
             let scale = 1usize << ((lmax - lvl) as usize);
-            let (ex, ey, ez) = (sx + scale, sy + scale, sz + scale);
-
-            let row = &vg_rows[idx * vecsz..(idx + 1) * vecsz];
-            let mut block = fg.slice_mut(s![sx..ex, sy..ey, sz..ez, ..]);
-            for xi in 0..scale {
-                for yj in 0..scale {
-                    for zk in 0..scale {
-                        let mut vox = block.slice_mut(s![xi, yj, zk, ..]);
-                        vox.assign(&ndarray::Array1::from(row.to_vec()));
-                    }
-                }
-            }
+            let row = ArrayView1::from(&vg_rows[idx * vecsz..(idx + 1) * vecsz]);
+            let mut block = fg.slice_mut(s![sx..sx + scale, sy..sy + scale, sz..sz + scale, ..]);
+            let row_b = row.broadcast(block.raw_dim()).unwrap();
+            block.assign(&row_b);
         }
         fg
     }
