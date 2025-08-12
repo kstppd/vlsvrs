@@ -11,9 +11,9 @@ struct RGB {
 }
 const VIRIDIS_STOPS: [RGB; 7] = [
     RGB {
-        r: 0.267,
-        g: 0.005,
-        b: 0.329,
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
     },
     RGB {
         r: 0.283,
@@ -46,6 +46,7 @@ const VIRIDIS_STOPS: [RGB; 7] = [
         b: 0.144,
     },
 ];
+
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
@@ -100,13 +101,19 @@ fn main() {
         .expect("No variable provided!");
 
     let f = VlsvFile::new(&file).unwrap();
+    let mut needs_log_scaling = false;
     let mut data = f
         .read_variable::<f32>(&var, Some(4))
-        .or_else(|| f.read_vdf::<f32>(var.parse::<usize>().unwrap(), "proton"))
+        .or_else(|| {
+            needs_log_scaling = true;
+            f.read_vdf::<f32>(var.parse::<usize>().unwrap(), "proton")
+        })
         .unwrap();
 
-    let eps = 1e-30;
-    data.mapv_inplace(|v| (v + eps).log10());
+    if needs_log_scaling {
+        let eps = 1e-30;
+        data.mapv_inplace(|v| (v + eps).log10());
+    }
     let max = data.fold(f32::NEG_INFINITY, |a, &b| a.max(b));
     let min = data.fold(f32::INFINITY, |a, &b| a.min(b));
     let range = max - min;
