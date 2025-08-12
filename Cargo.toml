@@ -11,18 +11,18 @@ categories = ["simulation","parsing","data-structures"]
 
 [dependencies]
 bytemuck = "1.22.0"
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.4", features = ["derive"],optional=true }
 libc = "0.2.174"
 memmap2 = "0.9.7"
 ndarray = "0.16.1"
 ndarray-npy = "0.9.1"
 num-traits = "0.2.19"
-numpy = "0.25.0"
-pyo3 = {version="0.25.1",features =["extension-module"]}
-rand = "0.9.0"
-rand_distr = "0.5.1"
-# raylib = "5.5.1"
-rayon = "1.10.0"
+numpy = { version = "0.25.0", optional = true }
+pyo3 = {version="0.25.1",features =["extension-module"],optional=true}
+rand = {version= "0.9.0",optional=true}
+rand_distr = {version= "0.5.1",optional=true}
+raylib = { version = "5.5.1", optional = true } 
+rayon =  {version="1.10.0",optional=true}
 regex = "1.11.1"
 serde = { version = "1.0", features = ["derive"] }
 serde-xml-rs = "0.6"
@@ -30,14 +30,17 @@ serde-xml-rs = "0.6"
 [[bin]]
 name="vlsv_dump"
 path="src/vlsv_dump.rs"
+required-features = ["vlsv_dump"]  
 
 [[bin]]
 name="vlsv_ptr"
 path="src/vlsv_ptr.rs"
+required-features = ["vlsv_ptr"]  
 
-# [[bin]]
-# name="vlsv_view"
-# path="src/vlsv_view.rs"
+[[bin]]
+name="vlsv_view"
+path="src/vlsv_view.rs"
+required-features = ["vlsv_view"]  
 
 [lib]
 name = "vlsvrs"
@@ -46,7 +49,10 @@ crate-type = ["staticlib", "cdylib","rlib"]
 
 [features]
 default = []
-with_bindings = []
+with_bindings = ["dep:pyo3", "dep:numpy"]
+vlsv_view = ["dep:raylib"]
+vlsv_ptr = ["dep:rayon","dep:rand","dep:rand_distr"]
+vlsv_dump = ["dep:clap"]
 
 [profile.release]
 opt-level = 3

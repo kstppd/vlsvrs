@@ -1211,6 +1211,7 @@ pub mod mod_vlsv_reader {
     }
 }
 
+#[cfg(feature = "vlsv_ptr")]
 pub mod mod_vlsv_tracing {
     use bytemuck::Pod;
     use ndarray::Array4;
