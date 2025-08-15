@@ -91,7 +91,7 @@ pub mod mod_vlsv_reader {
                         ("VERSION", "version_information", "Version not available!"),
                     ]
                     .into_iter()
-                    .filter_map(|(tag, section, warn_msg)| {
+                    .filter_map(|(tag, section, _warn_msg)| {
                         match read_tag(&xml_string, tag, None, Some(section)) {
                             Some(x) => Some((x.name.clone().unwrap(), x)),
                             None => {
