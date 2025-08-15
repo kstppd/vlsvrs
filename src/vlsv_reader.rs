@@ -95,7 +95,7 @@ pub mod mod_vlsv_reader {
                         match read_tag(&xml_string, tag, None, Some(section)) {
                             Some(x) => Some((x.name.clone().unwrap(), x)),
                             None => {
-                                eprintln!("{}", warn_msg);
+                                // eprintln!("{}", warn_msg);
                                 None
                             }
                         }
