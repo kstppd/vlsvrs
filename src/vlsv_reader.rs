@@ -2131,7 +2131,7 @@ pub mod mod_vlsv_c_exports {
 pub mod mod_vlsv_py_exports {
     use super::mod_vlsv_reader::VlsvFile;
     use ndarray::Array4;
-    use numpy::{IntoPyArray, PyArray4};
+    use numpy::{IntoPyArray, PyArray1, PyArray4};
     use pyfunction;
     use pyo3::exceptions::{PyIOError, PyValueError};
     use pyo3::prelude::*;
@@ -2215,6 +2215,44 @@ pub mod mod_vlsv_py_exports {
                 format!("variable '{}' not found", variable),
             )?;
             Ok(arr.into_pyarray(py).to_owned().into())
+        }
+
+        fn read_vg_variable_at_f32<'py>(
+            &self,
+            py: Python<'py>,
+            variable: &str,
+            comp: Option<i32>,
+            cid: Vec<usize>,
+        ) -> PyResult<Py<PyArray1<f32>>> {
+            let vals: Vec<f32> = self
+                .inner
+                .read_vg_variable_at::<f32>(variable, comp, &cid)
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "Variable '{}' or CellIDs {:?} not found",
+                        variable, cid
+                    ))
+                })?;
+            Ok(PyArray1::from_vec(py, vals).to_owned().into())
+        }
+
+        fn read_vg_variable_at_f64<'py>(
+            &self,
+            py: Python<'py>,
+            variable: &str,
+            comp: Option<i32>,
+            cid: Vec<usize>,
+        ) -> PyResult<Py<PyArray1<f64>>> {
+            let vals: Vec<f64> = self
+                .inner
+                .read_vg_variable_at::<f64>(variable, comp, &cid)
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "Variable '{}' or CellIDs {:?} not found",
+                        variable, cid
+                    ))
+                })?;
+            Ok(PyArray1::from_vec(py, vals).to_owned().into())
         }
 
         fn read_vdf_f32<'py>(
