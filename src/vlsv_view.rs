@@ -103,14 +103,14 @@ fn main() {
     let f = VlsvFile::new(&file).unwrap();
     let mut needs_log_scaling = false;
     let mut data = f
-        .read_variable::<f32>(&var, Some(4))
+        .read_variable_zoom::<f32>(&var, Some(4), 4_f64)
         .or_else(|| {
             needs_log_scaling = true;
             f.read_vdf::<f32>(var.parse::<usize>().unwrap(), "proton")
         })
         .unwrap();
 
-    println!("{:?}", data.dim());
+    println!("Dims= {:?}", data.dim());
     if needs_log_scaling {
         let eps = 1e-30;
         data.mapv_inplace(|v| (v + eps).log10());

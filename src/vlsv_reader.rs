@@ -680,107 +680,75 @@ pub mod mod_vlsv_reader {
             T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
         {
             let vdf: Array4<T> = self.read_vdf::<T>(cid, pop)?;
-            let (sx, sy, sz, sc) = vdf.dim();
-            let (tx, ty, tz, tc) = target.dim();
-            assert!(sc == 1 && tc == 1);
-            let (sxmin, symin, szmin, sxmax, symax, szmax) = self.get_vspace_mesh_extents(pop)?;
-            let (txmin, tymin, tzmin, txmax, tymax, tzmax) = target_extent;
-
-            let sdx = (sxmax - sxmin) / (sx as f64);
-            let sdy = (symax - symin) / (sy as f64);
-            let sdz = (szmax - szmin) / (sz as f64);
-            let tdx = (txmax - txmin) / (tx as f64);
-            let tdy = (tymax - tymin) / (ty as f64);
-            let tdz = (tzmax - tzmin) / (tz as f64);
-
-            let in_bounds = |i: isize, n: usize| i >= 0 && (i as usize) < n;
-            let tri_sample = |ux: f64, uy: f64, uz: f64, chan: usize| -> f64 {
-                let ix0 = ux.floor() as isize;
-                let iy0 = uy.floor() as isize;
-                let iz0 = uz.floor() as isize;
-                let fx = ux - ix0 as f64;
-                let fy = uy - iy0 as f64;
-                let fz = uz - iz0 as f64;
-                if !(in_bounds(ix0, sx)
-                    && in_bounds(ix0 + 1, sx)
-                    && in_bounds(iy0, sy)
-                    && in_bounds(iy0 + 1, sy)
-                    && in_bounds(iz0, sz)
-                    && in_bounds(iz0 + 1, sz))
-                {
-                    return 0.0;
-                }
-
-                let fetch = |i, j, k| -> f64 { NumCast::from(vdf[(i, j, k, chan)]).unwrap_or(0.0) };
-                let c000 = fetch(ix0 as usize, iy0 as usize, iz0 as usize);
-                let c100 = fetch((ix0 + 1) as usize, iy0 as usize, iz0 as usize);
-                let c010 = fetch(ix0 as usize, (iy0 + 1) as usize, iz0 as usize);
-                let c110 = fetch((ix0 + 1) as usize, (iy0 + 1) as usize, iz0 as usize);
-                let c001 = fetch(ix0 as usize, iy0 as usize, (iz0 + 1) as usize);
-                let c101 = fetch((ix0 + 1) as usize, iy0 as usize, (iz0 + 1) as usize);
-                let c011 = fetch(ix0 as usize, (iy0 + 1) as usize, (iz0 + 1) as usize);
-                let c111 = fetch((ix0 + 1) as usize, (iy0 + 1) as usize, (iz0 + 1) as usize);
-                let c00 = c000 * (1.0 - fx) + c100 * fx;
-                let c01 = c001 * (1.0 - fx) + c101 * fx;
-                let c10 = c010 * (1.0 - fx) + c110 * fx;
-                let c11 = c011 * (1.0 - fx) + c111 * fx;
-                let c0 = c00 * (1.0 - fy) + c10 * fy;
-                let c1 = c01 * (1.0 - fy) + c11 * fy;
-
-                c0 * (1.0 - fz) + c1 * fz
-            };
-
-            let to_src_u = |x_t: f64, xmin_s: f64, sdx: f64| -> f64 { (x_t - xmin_s) / sdx - 0.5 };
-
-            let c_use = sc.min(tc);
-            target.fill(T::zero());
-
-            for iz in 0..tz {
-                let zc = tzmin + (iz as f64 + 0.5) * tdz;
-                let uz = to_src_u(zc, szmin, sdz);
-
-                for iy in 0..ty {
-                    let yc = tymin + (iy as f64 + 0.5) * tdy;
-                    let uy = to_src_u(yc, symin, sdy);
-
-                    for ix in 0..tx {
-                        let xc = txmin + (ix as f64 + 0.5) * tdx;
-                        let ux = to_src_u(xc, sxmin, sdx);
-
-                        let mut total_value = 0.0;
-                        let mut count = 0;
-
-                        for iz_src in (ux.floor() as isize)..=(ux.ceil() as isize) {
-                            for iy_src in (uy.floor() as isize)..=(uy.ceil() as isize) {
-                                for ix_src in (uz.floor() as isize)..=(uz.ceil() as isize) {
-                                    if in_bounds(ix_src, sx)
-                                        && in_bounds(iy_src, sy)
-                                        && in_bounds(iz_src, sz)
-                                    {
-                                        total_value += tri_sample(ux, uy, uz, 0);
-                                        count += 1;
-                                    }
-                                }
-                            }
-                        }
-
-                        let average_value = if count > 0 {
-                            T::from(total_value).unwrap() / T::from(count).unwrap()
-                        } else {
-                            T::zero()
-                        };
-
-                        for c in 0..c_use {
-                            target[(ix, iy, iz, c)] = average_value;
-                        }
-                    }
-                }
-            }
-
+            let src_extent = self.get_vspace_mesh_extents(pop)?;
+            // remesh_trilinear(&vdf, src_extent, target, target_extent);
+            remesh_conservative(&vdf, src_extent, target, target_extent);
             Some(())
         }
 
+        pub fn read_vdf_zoom<T>(
+            &self,
+            cid: usize,
+            pop: &str,
+            scale_factor: f64,
+        ) -> Option<Array4<T>>
+        where
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+        {
+            let dst_extents = self.get_vspace_mesh_extents(pop)?;
+
+            let (nx, ny, nz) = {
+                let (nx0, ny0, nz0) = self.get_vspace_mesh_bbox(pop).unwrap();
+                (
+                    ((nx0 as f64) / scale_factor).round() as usize,
+                    ((ny0 as f64) / scale_factor).round() as usize,
+                    ((nz0 as f64) / scale_factor).round() as usize,
+                )
+            };
+            let mut vdf: Array4<T> = Array4::<T>::zeros((nx, ny, nz, 1));
+            self.read_vdf_into(cid, pop, &mut vdf, dst_extents);
+            Some(vdf)
+        }
+
         pub fn read_variable<T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag>(
+            &self,
+            name: &str,
+            op: Option<i32>,
+        ) -> Option<ndarray::Array4<T>> {
+            self.read_fsgrid_variable::<T>(name, op)
+                .or_else(|| self.read_vg_variable_as_fg::<T>(name, op))
+        }
+
+        pub fn read_variable_zoom<
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+        >(
+            &self,
+            name: &str,
+            op: Option<i32>,
+            scale_factor: f64,
+        ) -> Option<ndarray::Array4<T>> {
+            let mesh = self
+                .read_fsgrid_variable::<T>(name, op)
+                .or_else(|| self.read_vg_variable_as_fg::<T>(name, op))?;
+
+            let vector_dim = mesh.dim().3;
+            let dst_extents = self.get_spatial_mesh_extents()?;
+            let (nx, ny, nz) = {
+                let (nx0, ny0, nz0) = self.get_spatial_mesh_bbox().unwrap();
+                (
+                    ((nx0 as f64) / scale_factor).round() as usize,
+                    ((ny0 as f64) / scale_factor).round() as usize,
+                    ((nz0 as f64) / scale_factor).round() as usize,
+                )
+            };
+            let mut remesh: Array4<T> = Array4::<T>::zeros((nx, ny, nz, vector_dim));
+            remesh_conservative(&mesh, dst_extents, &mut remesh, dst_extents);
+            Some(remesh)
+        }
+
+        pub fn read_variable_into_dims<
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+        >(
             &self,
             name: &str,
             op: Option<i32>,
@@ -899,6 +867,202 @@ pub mod mod_vlsv_reader {
             cum = cum.checked_add(count)?;
         }
         None
+    }
+
+    pub fn remesh_trilinear<T>(
+        src: &Array4<T>,
+        src_extent: (f64, f64, f64, f64, f64, f64),
+        dst: &mut Array4<T>,
+        dst_extent: (f64, f64, f64, f64, f64, f64),
+    ) where
+        T: Copy + Zero + Num + NumCast + Default,
+    {
+        fn trilinear_sample<T>(src: &Array4<T>, ux: f64, uy: f64, uz: f64, chan: usize) -> f64
+        where
+            T: Num + NumCast + Copy,
+        {
+            let (sx, sy, sz, _sc) = src.dim();
+            let in_bounds = |i: isize, n: usize| i >= 0 && (i as usize) < n;
+            let ix0 = ux.floor() as isize;
+            let iy0 = uy.floor() as isize;
+            let iz0 = uz.floor() as isize;
+            let fx = ux - ix0 as f64;
+            let fy = uy - iy0 as f64;
+            let fz = uz - iz0 as f64;
+
+            if !(in_bounds(ix0, sx)
+                && in_bounds(ix0 + 1, sx)
+                && in_bounds(iy0, sy)
+                && in_bounds(iy0 + 1, sy)
+                && in_bounds(iz0, sz)
+                && in_bounds(iz0 + 1, sz))
+            {
+                return 0.0;
+            }
+
+            let f = |i, j, k| -> f64 { NumCast::from(src[(i, j, k, chan)]).unwrap_or(0.0) };
+            let c000 = f(ix0 as usize, iy0 as usize, iz0 as usize);
+            let c100 = f((ix0 + 1) as usize, iy0 as usize, iz0 as usize);
+            let c010 = f(ix0 as usize, (iy0 + 1) as usize, iz0 as usize);
+            let c110 = f((ix0 + 1) as usize, (iy0 + 1) as usize, iz0 as usize);
+            let c001 = f(ix0 as usize, iy0 as usize, (iz0 + 1) as usize);
+            let c101 = f((ix0 + 1) as usize, iy0 as usize, (iz0 + 1) as usize);
+            let c011 = f(ix0 as usize, (iy0 + 1) as usize, (iz0 + 1) as usize);
+            let c111 = f((ix0 + 1) as usize, (iy0 + 1) as usize, (iz0 + 1) as usize);
+
+            let c00 = c000 * (1.0 - fx) + c100 * fx;
+            let c10 = c010 * (1.0 - fx) + c110 * fx;
+            let c01 = c001 * (1.0 - fx) + c101 * fx;
+            let c11 = c011 * (1.0 - fx) + c111 * fx;
+
+            let c0 = c00 * (1.0 - fy) + c10 * fy;
+            let c1 = c01 * (1.0 - fy) + c11 * fy;
+
+            return c0 * (1.0 - fz) + c1 * fz;
+        }
+
+        let (sx, sy, sz, sc) = src.dim();
+        let (tx, ty, tz, tc) = dst.dim();
+        assert!(sc == tc, "ERROR: different vectorsizes found");
+
+        let (sxmin, symin, szmin, sxmax, symax, szmax) = src_extent;
+        let (txmin, tymin, tzmin, txmax, tymax, tzmax) = dst_extent;
+
+        let sdx = (sxmax - sxmin) / (sx as f64);
+        let sdy = (symax - symin) / (sy as f64);
+        let sdz = (szmax - szmin) / (sz as f64);
+
+        let tdx = (txmax - txmin) / (tx as f64);
+        let tdy = (tymax - tymin) / (ty as f64);
+        let tdz = (tzmax - tzmin) / (tz as f64);
+
+        let to_src_u = |x_t: f64, xmin_s: f64, sd: f64| -> f64 { (x_t - xmin_s) / sd - 0.5 };
+        dst.fill(T::zero());
+
+        let c_use = sc.min(tc);
+
+        for ic in 0..tc {
+            for iz in 0..tz {
+                let zc = tzmin + (iz as f64 + 0.5) * tdz;
+                let uz = to_src_u(zc, szmin, sdz);
+
+                for iy in 0..ty {
+                    let yc = tymin + (iy as f64 + 0.5) * tdy;
+                    let uy = to_src_u(yc, symin, sdy);
+                    for ix in 0..tx {
+                        let xc = txmin + (ix as f64 + 0.5) * tdx;
+                        let ux = to_src_u(xc, sxmin, sdx);
+
+                        let v = trilinear_sample(src, ux, uy, uz, ic);
+                        let v_t: T = NumCast::from(v).unwrap_or_else(T::zero);
+
+                        for c in 0..c_use {
+                            dst[(ix, iy, iz, c)] = v_t;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn remesh_conservative<T>(
+        src: &Array4<T>,
+        src_extent: (f64, f64, f64, f64, f64, f64),
+        dst: &mut Array4<T>,
+        dst_extent: (f64, f64, f64, f64, f64, f64),
+    ) where
+        T: Copy + Zero + Num + NumCast + Default,
+    {
+        fn overlap_1d(a_min: f64, a_max: f64, b_min: f64, b_max: f64) -> f64 {
+            let lo = a_min.max(b_min);
+            let hi = a_max.min(b_max);
+            (hi - lo).max(0.0)
+        }
+        let (sx, sy, sz, sc) = src.dim();
+        let (tx, ty, tz, tc) = dst.dim();
+        assert!(sc == tc, "ERROR: different vectorsizes found");
+
+        let (sxmin, symin, szmin, sxmax, symax, szmax) = src_extent;
+        let (txmin, tymin, tzmin, txmax, tymax, tzmax) = dst_extent;
+
+        let sdx = (sxmax - sxmin) / sx as f64;
+        let sdy = (symax - symin) / sy as f64;
+        let sdz = (szmax - szmin) / sz as f64;
+
+        let tdx = (txmax - txmin) / tx as f64;
+        let tdy = (tymax - tymin) / ty as f64;
+        let tdz = (tzmax - tzmin) / tz as f64;
+
+        let dst_cell_vol = tdx * tdy * tdz;
+
+        dst.fill(T::zero());
+
+        for ic in 0..tc {
+            for iz in 0..tz {
+                let tz0 = tzmin + iz as f64 * tdz;
+                let tz1 = tz0 + tdz;
+
+                let sz_start = (((tz0 - szmin) / sdz).floor() as isize - 1).max(0) as usize;
+                let sz_end = (((tz1 - szmin) / sdz).ceil() as usize + 1).min(sz);
+
+                for iy in 0..ty {
+                    let ty0 = tymin + iy as f64 * tdy;
+                    let ty1 = ty0 + tdy;
+                    let sy_start = (((ty0 - symin) / sdy).floor() as isize - 1).max(0) as usize;
+                    let sy_end = (((ty1 - symin) / sdy).ceil() as usize + 1).min(sy);
+
+                    for ix in 0..tx {
+                        let tx0 = txmin + ix as f64 * tdx;
+                        let tx1 = tx0 + tdx;
+                        let sx_start = (((tx0 - sxmin) / sdx).floor() as isize - 1).max(0) as usize;
+                        let sx_end = (((tx1 - sxmin) / sdx).ceil() as usize + 1).min(sx);
+
+                        let mut accum = 0.0f64;
+
+                        for kz in sz_start..sz_end {
+                            let sz0 = szmin + kz as f64 * sdz;
+                            let sz1 = sz0 + sdz;
+                            let wz = overlap_1d(sz0, sz1, tz0, tz1);
+
+                            if wz == 0.0 {
+                                continue;
+                            }
+
+                            for ky in sy_start..sy_end {
+                                let sy0 = symin + ky as f64 * sdy;
+                                let sy1 = sy0 + sdy;
+                                let wy = overlap_1d(sy0, sy1, ty0, ty1);
+                                if wy == 0.0 {
+                                    continue;
+                                }
+
+                                for kx in sx_start..sx_end {
+                                    let sx0 = sxmin + kx as f64 * sdx;
+                                    let sx1 = sx0 + sdx;
+                                    let wx = overlap_1d(sx0, sx1, tx0, tx1);
+                                    if wx == 0.0 {
+                                        continue;
+                                    }
+
+                                    // overlap volume
+                                    let w = wx * wy * wz;
+                                    let val: f64 =
+                                        NumCast::from(src[(kx, ky, kz, ic)]).unwrap_or(0.0);
+                                    accum += val * w;
+                                }
+                            }
+                        }
+
+                        let avg = if dst_cell_vol > 0.0 {
+                            accum / dst_cell_vol
+                        } else {
+                            0.0
+                        };
+                        dst[(ix, iy, iz, ic)] = NumCast::from(avg).unwrap_or_else(T::zero);
+                    }
+                }
+            }
+        }
     }
 
     fn cid2fineijk(
