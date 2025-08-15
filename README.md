@@ -43,9 +43,9 @@ Example usage in C:
 
 int main() {
   Grid32 vdf1 =
-      read_vdf_32("/home/kstppd/backups/kstppd/tsi.vlsv", "proton", 256);
+      read_vdf_32("tsi.vlsv", "proton", 256);
   Grid64 vdf2 =
-      read_vdf_64("/home/kstppd/backups/kstppd/tsi.vlsv", "proton", 256);
+      read_vdf_64("tsi.vlsv", "proton", 256);
 
   printf("VDF1 with shape [%zu,%zu,%zu] extents[%f,%f,%f,%f,%f,%f] @%p\n",
          vdf1.nx, vdf1.ny, vdf1.nz, vdf1.xmin, vdf1.ymin, vdf1.zmin, vdf1.xmax,
