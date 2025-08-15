@@ -485,7 +485,9 @@ pub mod mod_vlsv_reader {
             if info.grid? != VlasiatorGrid::FSGRID {
                 return None;
             }
-            let decomp = self.get_domain_decomposition()?;
+            let decomp = self
+                .get_domain_decomposition()
+                .expect("ERROR: Domain Decomposition could not be recovered from {self.filename}.");
             let ntasks = self.get_writting_tasks()?;
             let (nx, ny, nz) = self.get_spatial_mesh_bbox()?;
 
