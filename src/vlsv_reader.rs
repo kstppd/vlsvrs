@@ -60,16 +60,6 @@ pub mod mod_vlsv_reader {
     use std::{collections::HashMap, str::FromStr};
     extern crate libc;
 
-    #[derive(Debug, Clone)]
-    pub struct VlsvDataset {
-        pub offset: usize,
-        pub arraysize: usize,
-        pub vectorsize: usize,
-        pub datasize: usize,
-        pub datatype: String,
-        grid: Option<VlasiatorGrid>,
-    }
-
     #[derive(Debug)]
     pub struct VlsvFile {
         pub filename: String,
@@ -144,20 +134,20 @@ pub mod mod_vlsv_reader {
                     let mut buffer: [u8; 8] = [0; 8];
                     buffer.copy_from_slice(cast_slice(src_bytes));
 
-                    match info.datatype.as_str() {
-                        "float" => f64::from_ne_bytes(buffer),
-                        "uint" => usize::from_ne_bytes(buffer) as f64,
-                        "int" => i64::from_ne_bytes(buffer) as f64,
+                    match info.datatype {
+                        DataType::Float => f64::from_ne_bytes(buffer),
+                        DataType::Uint => usize::from_ne_bytes(buffer) as f64,
+                        DataType::Int => i64::from_ne_bytes(buffer) as f64,
                         _ => panic!("Only matched against uint and float"),
                     }
                 }
                 4 => {
                     let mut buffer: [u8; 4] = [0; 4];
                     buffer.copy_from_slice(cast_slice(src_bytes));
-                    match info.datatype.as_str() {
-                        "float" => f32::from_ne_bytes(buffer) as f64,
-                        "uint" => u32::from_ne_bytes(buffer) as f64,
-                        "int" => i32::from_ne_bytes(buffer) as f64,
+                    match info.datatype {
+                        DataType::Float => f32::from_ne_bytes(buffer) as f64,
+                        DataType::Uint => u32::from_ne_bytes(buffer) as f64,
+                        DataType::Int => i32::from_ne_bytes(buffer) as f64,
                         _ => panic!("Only matched against uint and float"),
                     }
                 }
@@ -223,7 +213,7 @@ pub mod mod_vlsv_reader {
                For floats it makes sense as we may need to read f64 fields as f32 for memory savings.
             */
             let type_on_disk = info.datatype;
-            let type_of_t = T::type_name();
+            let type_of_t = T::data_type();
             //T=>T
             if type_on_disk == type_of_t && info.datasize == std::mem::size_of::<T>() {
                 dst_bytes.copy_from_slice(src_bytes);
@@ -231,31 +221,56 @@ pub mod mod_vlsv_reader {
             }
             unsafe {
                 //f32=>f64
-                if type_on_disk == "float"
-                    && info.datasize == 4
-                    && type_of_t == "float"
-                    && std::mem::size_of::<T>() == 8
+                if type_on_disk == DataType::Float
+                    && info.datasize == std::mem::size_of::<f32>()
+                    && type_of_t == DataType::Float
+                    && std::mem::size_of::<T>() == std::mem::size_of::<f64>()
                 {
                     let dst_f64: &mut [f64] =
                         std::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<f64>(), dst.len());
 
-                    for (i, bytes) in src_bytes.chunks_exact(4).enumerate() {
+                    for (i, bytes) in src_bytes
+                        .chunks_exact(std::mem::size_of::<f32>())
+                        .enumerate()
+                    {
                         let v64 = f32::from_le_bytes(bytes.try_into().unwrap()) as f64;
                         dst_f64[i] = v64;
                     }
                     return;
                 }
                 //f64=>f32
-                if type_on_disk == "float"
-                    && info.datasize == 8
-                    && std::mem::size_of::<T>() == 4
-                    && type_of_t == "float"
+                if type_on_disk == DataType::Float
+                    && info.datasize == std::mem::size_of::<f64>()
+                    && std::mem::size_of::<T>() == std::mem::size_of::<f32>()
+                    && type_of_t == DataType::Float
                 {
                     let dst_f32: &mut [f32] =
                         std::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<f32>(), dst.len());
 
-                    for (i, bytes) in src_bytes.chunks_exact(8).enumerate() {
+                    for (i, bytes) in src_bytes
+                        .chunks_exact(std::mem::size_of::<f64>())
+                        .enumerate()
+                    {
                         let v32 = f64::from_le_bytes(bytes.try_into().unwrap()) as f32;
+                        dst_f32[i] = v32;
+                    }
+                    return;
+                }
+                //i32=>f32
+                if type_on_disk == DataType::Int
+                    && info.datasize == std::mem::size_of::<i32>()
+                    && std::mem::size_of::<T>() == std::mem::size_of::<f32>()
+                    && type_of_t == DataType::Float
+                {
+                    let dst_f32: &mut [f32] =
+                        std::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<f32>(), dst.len());
+
+                    for (i, bytes) in src_bytes
+                        .chunks_exact(std::mem::size_of::<i32>())
+                        .enumerate()
+                    {
+                        let cand = i32::from_ne_bytes(bytes.try_into().unwrap());
+                        let v32 = cand as f32;
                         dst_f32[i] = v32;
                     }
                     return;
@@ -263,7 +278,7 @@ pub mod mod_vlsv_reader {
             }
             //Any other mismatch panics!
             panic!(
-                "Incompatible reads: {type_on_disk}({}) => {type_of_t}({}) ",
+                "Incompatible reads: {type_on_disk:?}({}) => {type_of_t:?}({}) ",
                 info.datasize,
                 std::mem::size_of::<T>()
             );
@@ -1109,7 +1124,12 @@ pub mod mod_vlsv_reader {
                     .parse::<usize>()
                     .map_err(|e| format!("Invalid datasize: {}", e))?,
 
-                datatype: var.datatype.as_ref().ok_or("Missing datatype")?.clone(),
+                datatype: var
+                    .datatype
+                    .as_deref()
+                    .ok_or("Missing datatype")?
+                    .parse::<DataType>()
+                    .map_err(|e| format!("{e}"))?,
                 grid: g,
             })
         }
@@ -1153,7 +1173,12 @@ pub mod mod_vlsv_reader {
                     .parse::<usize>()
                     .map_err(|e| format!("Invalid datasize: {}", e))?,
 
-                datatype: var.datatype.clone().ok_or("Missing datatype")?,
+                datatype: var
+                    .datatype
+                    .as_deref()
+                    .ok_or("Missing datatype")?
+                    .parse::<DataType>()
+                    .map_err(|e| format!("{e}"))?,
                 grid: g,
             })
         }
@@ -1180,31 +1205,105 @@ pub mod mod_vlsv_reader {
         }
     }
 
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum DataType {
+        Float,
+        Int,
+        Uint,
+        U8,
+    }
+
+    impl std::str::FromStr for DataType {
+        type Err = String;
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            match s {
+                "float" => Ok(DataType::Float),
+                "int" => Ok(DataType::Int),
+                "uint" => Ok(DataType::Uint),
+                "u8" => Ok(DataType::U8),
+                other => Err(format!("Unknown datatype: {other}")),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct VlsvDataset {
+        pub offset: usize,
+        pub arraysize: usize,
+        pub vectorsize: usize,
+        pub datasize: usize,
+        pub datatype: DataType,
+        grid: Option<VlasiatorGrid>,
+    }
+
     pub trait TypeTag {
         fn type_name() -> &'static str;
+        fn data_type() -> DataType;
     }
 
-    macro_rules! impl_prim_meta {
-        ( $( $t:ty => $tag:expr ),* $(,)? ) => {
-            $(
-                impl TypeTag for $t {
-                    fn type_name() -> &'static str { $tag }
-                }
-
-            )*
-        };
+    impl TypeTag for f32 {
+        fn type_name() -> &'static str {
+            "float"
+        }
+        fn data_type() -> DataType {
+            DataType::Float
+        }
     }
-
-    //Vlasiator vlsv naming convention
-    impl_prim_meta! {
-        f32   => "float",
-        f64   => "float",
-        u32   => "uint",
-        i32   => "int",
-        u64   => "uint",
-        i64   => "int",
-        u8    => "u8",
-        usize => "uint",
+    impl TypeTag for f64 {
+        fn type_name() -> &'static str {
+            "float"
+        }
+        fn data_type() -> DataType {
+            DataType::Float
+        }
+    }
+    impl TypeTag for u32 {
+        fn type_name() -> &'static str {
+            "uint"
+        }
+        fn data_type() -> DataType {
+            DataType::Uint
+        }
+    }
+    impl TypeTag for i32 {
+        fn type_name() -> &'static str {
+            "int"
+        }
+        fn data_type() -> DataType {
+            DataType::Int
+        }
+    }
+    impl TypeTag for u64 {
+        fn type_name() -> &'static str {
+            "uint"
+        }
+        fn data_type() -> DataType {
+            DataType::Uint
+        }
+    }
+    impl TypeTag for i64 {
+        fn type_name() -> &'static str {
+            "int"
+        }
+        fn data_type() -> DataType {
+            DataType::Int
+        }
+    }
+    impl TypeTag for u8 {
+        fn type_name() -> &'static str {
+            "u8"
+        }
+        fn data_type() -> DataType {
+            DataType::U8
+        }
+    }
+    impl TypeTag for usize {
+        fn type_name() -> &'static str {
+            "uint"
+        }
+        fn data_type() -> DataType {
+            DataType::Uint
+        }
     }
 }
 
