@@ -788,6 +788,44 @@ pub mod mod_vlsv_reader {
             self.read_fsgrid_variable::<T>(name, op)
                 .or_else(|| self.read_vg_variable_as_fg::<T>(name, op))
         }
+
+        pub fn read_vg_variable_at<
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+        >(
+            &self,
+            name: &str,
+            component: Option<i32>,
+            cid: &[usize],
+        ) -> Option<Vec<T>> {
+            let mut info = self.get_dataset(name)?;
+            if info.grid.clone()? != VlasiatorGrid::SPATIALGRID {
+                panic!("This method only supports reading in VG variables");
+            }
+            let cellid_ds = self.get_dataset("CellID")?;
+            let mut cell_ids = Vec::<u64>::with_capacity(cellid_ds.arraysize);
+            unsafe { cell_ids.set_len(cellid_ds.arraysize) };
+            self.read_variable_into::<u64>(None, Some(cellid_ds), &mut cell_ids);
+            let indices = cid
+                .iter()
+                .map(|cand| {
+                    cell_ids
+                        .iter()
+                        .position(|x| *x == *cand as u64)
+                        .expect("Failed to find cellid {cand}")
+                })
+                .collect::<Vec<usize>>();
+            let base_byte_offset = info.offset;
+            let mut retval = Vec::<T>::with_capacity(indices.len());
+            unsafe { retval.set_len(indices.len()) };
+            retval.iter_mut().zip(indices).for_each(|(x, index)| {
+                info.offset =
+                    base_byte_offset + (index + component.unwrap_or(0) as usize) * info.datasize;
+                info.arraysize = 1;
+                info.vectorsize = 1;
+                self.read_variable_into::<T>(None, Some(info.clone()), std::slice::from_mut(x));
+            });
+            Some(retval)
+        }
     }
 
     fn read_tag(xml: &str, tag: &str, mesh: Option<&str>, name: Option<&str>) -> Option<Variable> {
