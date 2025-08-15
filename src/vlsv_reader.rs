@@ -745,17 +745,6 @@ pub mod mod_vlsv_reader {
             remesh_conservative(&mesh, dst_extents, &mut remesh, dst_extents);
             Some(remesh)
         }
-
-        pub fn read_variable_into_dims<
-            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
-        >(
-            &self,
-            name: &str,
-            op: Option<i32>,
-        ) -> Option<ndarray::Array4<T>> {
-            self.read_fsgrid_variable::<T>(name, op)
-                .or_else(|| self.read_vg_variable_as_fg::<T>(name, op))
-        }
     }
 
     fn read_tag(xml: &str, tag: &str, mesh: Option<&str>, name: Option<&str>) -> Option<Variable> {
