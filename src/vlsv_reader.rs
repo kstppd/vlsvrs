@@ -798,6 +798,148 @@ pub mod mod_vlsv_reader {
             });
             Some(retval)
         }
+
+        pub fn read_vg_variable_at_as_ref<'a, T: bytemuck::AnyBitPattern>(
+            &'a self,
+            name: &str,
+            component: Option<i32>,
+            cid: &[usize],
+        ) -> Option<Vec<&'a T>> {
+            let mut info = self.get_dataset(name)?;
+            if info.grid.clone()? != VlasiatorGrid::SPATIALGRID {
+                panic!("This method only supports reading in VG variables");
+            }
+            let cellid_ds = self.get_dataset("CellID")?;
+            let cell_id_bytes = &self.memmap
+                [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
+            // let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
+            //     .expect("CELLIDS misaligned or wrong length");
+            let cell_ids = unsafe {
+                std::slice::from_raw_parts(
+                    cell_id_bytes.as_ptr() as *const u64,
+                    cell_id_bytes.len() / std::mem::size_of::<u64>(),
+                )
+            };
+
+            let indices = cid
+                .iter()
+                .map(|cand| {
+                    cell_ids
+                        .iter()
+                        .position(|x| *x == *cand as u64)
+                        .expect("Failed to find cellid {cand}")
+                })
+                .collect::<Vec<usize>>();
+            let base_byte_offset = info.offset;
+            let mut retval = Vec::<&'a T>::with_capacity(indices.len());
+            unsafe { retval.set_len(indices.len()) };
+            retval.iter_mut().zip(indices).for_each(|(x, index)| {
+                info.offset =
+                    base_byte_offset + (index + component.unwrap_or(0) as usize) * info.datasize;
+                info.arraysize = 1;
+                info.vectorsize = 1;
+                let bytes = &self.memmap[info.offset..info.offset + info.datasize];
+                *x = bytemuck::from_bytes(&bytes)
+            });
+            Some(retval)
+        }
+
+        pub fn read_vg_variable_at_as_ref_const<'a, T, const N: usize>(
+            &'a self,
+            name: &str,
+            component: Option<i32>,
+            cid: &[usize; N],
+        ) -> Option<[&'a T; N]>
+        where
+            T: bytemuck::AnyBitPattern,
+        {
+            //Instead of native .position() cause here the compiler seems to use some ILP nicely
+            #[inline(always)]
+            fn find_cell_index_unrolled(cell_ids: &[u64], target: u64) -> Option<usize> {
+                let n = cell_ids.len();
+                let mut i = 0;
+                while i + 8 <= n {
+                    let a = cell_ids[i];
+                    let b = cell_ids[i + 1];
+                    let c = cell_ids[i + 2];
+                    let d = cell_ids[i + 3];
+                    let e = cell_ids[i + 4];
+                    let f = cell_ids[i + 5];
+                    let g = cell_ids[i + 6];
+                    let h = cell_ids[i + 7];
+                    if a == target {
+                        return Some(i);
+                    }
+                    if b == target {
+                        return Some(i + 1);
+                    }
+                    if c == target {
+                        return Some(i + 2);
+                    }
+                    if d == target {
+                        return Some(i + 3);
+                    }
+                    if e == target {
+                        return Some(i + 4);
+                    }
+                    if f == target {
+                        return Some(i + 5);
+                    }
+                    if g == target {
+                        return Some(i + 6);
+                    }
+                    if h == target {
+                        return Some(i + 7);
+                    }
+                    i += 8;
+                }
+                while i < n {
+                    if cell_ids[i] == target {
+                        return Some(i);
+                    }
+                    i += 1;
+                }
+                None
+            }
+
+            let info0 = self.get_dataset(name)?;
+            if info0.grid.clone()? != VlasiatorGrid::SPATIALGRID {
+                panic!("This method only supports reading in VG variables");
+            }
+
+            let cellid_ds = self.get_dataset("CellID")?;
+            let cell_id_bytes = &self.memmap
+                [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
+
+            //Would be nice but if CIDS are not aligned we get UB
+            // let cell_ids = unsafe {
+            //     std::slice::from_raw_parts(
+            //         cell_id_bytes.as_ptr() as *const u64,
+            //         cell_id_bytes.len() / std::mem::size_of::<u64>(),
+            //     )
+            // };
+            let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
+                .expect("CELLIDS misaligned or wrong length");
+
+            let base_byte_offset = info0.offset;
+            let datasize = info0.datasize;
+            let comp = component.unwrap_or(0) as usize;
+
+            let indices: [usize; N] = std::array::from_fn(|i| {
+                let target = cid[i] as u64;
+                find_cell_index_unrolled(cell_ids, target)
+                    .unwrap_or_else(|| panic!("Failed to find cellid {}", target))
+            });
+
+            let out: [&'a T; N] = std::array::from_fn(|i| {
+                let index = indices[i];
+                let offset = base_byte_offset + (index + comp) * datasize;
+                let bytes = &self.memmap[offset..offset + datasize];
+                bytemuck::from_bytes(bytes)
+            });
+
+            Some(out)
+        }
     }
 
     fn read_tag(xml: &str, tag: &str, mesh: Option<&str>, name: Option<&str>) -> Option<Variable> {
