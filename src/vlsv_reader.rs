@@ -849,59 +849,11 @@ pub mod mod_vlsv_reader {
             name: &str,
             component: Option<i32>,
             cid: &[usize; N],
+            hint: &mut [usize; N],
         ) -> Option<[&'a T; N]>
         where
             T: bytemuck::AnyBitPattern,
         {
-            //Instead of native .position() cause here the compiler seems to use some ILP nicely
-            #[inline(always)]
-            fn find_cell_index_unrolled(cell_ids: &[u64], target: u64) -> Option<usize> {
-                let n = cell_ids.len();
-                let mut i = 0;
-                while i + 8 <= n {
-                    let a = cell_ids[i];
-                    let b = cell_ids[i + 1];
-                    let c = cell_ids[i + 2];
-                    let d = cell_ids[i + 3];
-                    let e = cell_ids[i + 4];
-                    let f = cell_ids[i + 5];
-                    let g = cell_ids[i + 6];
-                    let h = cell_ids[i + 7];
-                    if a == target {
-                        return Some(i);
-                    }
-                    if b == target {
-                        return Some(i + 1);
-                    }
-                    if c == target {
-                        return Some(i + 2);
-                    }
-                    if d == target {
-                        return Some(i + 3);
-                    }
-                    if e == target {
-                        return Some(i + 4);
-                    }
-                    if f == target {
-                        return Some(i + 5);
-                    }
-                    if g == target {
-                        return Some(i + 6);
-                    }
-                    if h == target {
-                        return Some(i + 7);
-                    }
-                    i += 8;
-                }
-                while i < n {
-                    if cell_ids[i] == target {
-                        return Some(i);
-                    }
-                    i += 1;
-                }
-                None
-            }
-
             let info0 = self.get_dataset(name)?;
             if info0.grid.clone()? != VlasiatorGrid::SPATIALGRID {
                 panic!("This method only supports reading in VG variables");
@@ -911,13 +863,6 @@ pub mod mod_vlsv_reader {
             let cell_id_bytes = &self.memmap
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
 
-            //Would be nice but if CIDS are not aligned we get UB
-            // let cell_ids = unsafe {
-            //     std::slice::from_raw_parts(
-            //         cell_id_bytes.as_ptr() as *const u64,
-            //         cell_id_bytes.len() / std::mem::size_of::<u64>(),
-            //     )
-            // };
             let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
                 .expect("CELLIDS misaligned or wrong length");
 
@@ -927,19 +872,115 @@ pub mod mod_vlsv_reader {
 
             let indices: [usize; N] = std::array::from_fn(|i| {
                 let target = cid[i] as u64;
-                find_cell_index_unrolled(cell_ids, target)
+                let h = hint[i];
+                find_near_with_hint(cell_ids, target, h)
                     .unwrap_or_else(|| panic!("Failed to find cellid {}", target))
             });
-
+            //Update hint for next file
+            hint.copy_from_slice(&indices);
             let out: [&'a T; N] = std::array::from_fn(|i| {
                 let index = indices[i];
                 let offset = base_byte_offset + (index + comp) * datasize;
                 let bytes = &self.memmap[offset..offset + datasize];
                 bytemuck::from_bytes(bytes)
             });
-
             Some(out)
         }
+    }
+
+    //Galloping on top of cellids hints
+    #[inline(always)]
+    fn find_near_with_hint(cell_ids: &[u64], target: u64, hint: usize) -> Option<usize> {
+        let n = cell_ids.len();
+        if n == 0 {
+            return None;
+        }
+        let h = hint.min(n - 1);
+        if cell_ids[h] == target {
+            return Some(h);
+        }
+
+        let mut prev_w = 0usize;
+        let mut w: usize = 128;
+
+        loop {
+            let left_prev = h.saturating_sub(prev_w);
+            let right_prev = (h + prev_w).min(n - 1);
+            let left_now = h.saturating_sub(w);
+            let right_now = (h + w).min(n - 1);
+            let mut i = left_now;
+            while i < left_prev {
+                if cell_ids[i] == target {
+                    return Some(i);
+                }
+                i += 1;
+            }
+            let mut j = right_prev.saturating_add(1);
+            while j <= right_now {
+                if cell_ids[j] == target {
+                    return Some(j);
+                }
+                j += 1;
+            }
+            if left_now == 0 && right_now == n - 1 {
+                break;
+            }
+            prev_w = w;
+            if w >= n {
+                break;
+            }
+            w = w.saturating_mul(2);
+        }
+        None
+    }
+
+    //Instead of native .position() cause here the compiler seems to use some ILP nicely
+    #[inline(always)]
+    fn find_cell_index_unrolled(cell_ids: &[u64], target: u64) -> Option<usize> {
+        let n = cell_ids.len();
+        let mut i = 0;
+        while i + 8 <= n {
+            let a = cell_ids[i];
+            let b = cell_ids[i + 1];
+            let c = cell_ids[i + 2];
+            let d = cell_ids[i + 3];
+            let e = cell_ids[i + 4];
+            let f = cell_ids[i + 5];
+            let g = cell_ids[i + 6];
+            let h = cell_ids[i + 7];
+            if a == target {
+                return Some(i);
+            }
+            if b == target {
+                return Some(i + 1);
+            }
+            if c == target {
+                return Some(i + 2);
+            }
+            if d == target {
+                return Some(i + 3);
+            }
+            if e == target {
+                return Some(i + 4);
+            }
+            if f == target {
+                return Some(i + 5);
+            }
+            if g == target {
+                return Some(i + 6);
+            }
+            if h == target {
+                return Some(i + 7);
+            }
+            i += 8;
+        }
+        while i < n {
+            if cell_ids[i] == target {
+                return Some(i);
+            }
+            i += 1;
+        }
+        None
     }
 
     fn read_tag(xml: &str, tag: &str, mesh: Option<&str>, name: Option<&str>) -> Option<Variable> {
