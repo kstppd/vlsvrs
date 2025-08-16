@@ -47,11 +47,11 @@ There are 3 main parts here:
 #![allow(non_snake_case)]
 
 pub mod mod_vlsv_reader {
-    const VLSV_FOOTER_LOC_START: usize = 8;
-    const VLSV_FOOTER_LOC_END: usize = 16;
+    pub const VLSV_FOOTER_LOC_START: usize = 8;
+    pub const VLSV_FOOTER_LOC_END: usize = 16;
     use bytemuck::{Pod, cast_slice};
     use core::convert::TryInto;
-    use memmap2::Mmap;
+    use memmap2::{Mmap, MmapOptions};
     use ndarray::{Array4, ArrayView1};
     use ndarray::{Axis, Order, s};
     use num_traits::{Num, NumCast, Zero};
@@ -65,21 +65,18 @@ pub mod mod_vlsv_reader {
         pub filename: String,
         pub variables: HashMap<String, Variable>,
         pub parameters: HashMap<String, Variable>,
-        pub xml: String,
         pub memmap: Mmap,
         pub root: VlsvRoot,
     }
 
     impl VlsvFile {
         pub fn new(filename: &str) -> Result<Self, Box<dyn std::error::Error>> {
-            let mmap = unsafe { Mmap::map(&std::fs::File::open(filename)?)? };
-            let xml_string = {
-                let footer_offset: usize = usize::from_ne_bytes(
-                    mmap[VLSV_FOOTER_LOC_START..VLSV_FOOTER_LOC_END].try_into()?,
-                );
-                std::str::from_utf8(&mmap[footer_offset..])?.to_string()
-            };
-            let root: VlsvRoot = serde_xml_rs::from_str(&xml_string)?;
+            let file = std::fs::File::open(filename)?;
+            let mmap = unsafe { MmapOptions::new().map(&file)? };
+            let footer_offset: usize =
+                usize::from_ne_bytes(mmap[VLSV_FOOTER_LOC_START..VLSV_FOOTER_LOC_END].try_into()?);
+            let xml_str = std::str::from_utf8(&mmap[footer_offset..])?;
+            let root: VlsvRoot = serde_xml_rs::from_str(xml_str)?;
 
             let vars: HashMap<String, Variable> = root
                 .variables
@@ -92,13 +89,8 @@ pub mod mod_vlsv_reader {
                     ]
                     .into_iter()
                     .filter_map(|(tag, section, _warn_msg)| {
-                        match read_tag(&xml_string, tag, None, Some(section)) {
-                            Some(x) => Some((x.name.clone().unwrap(), x)),
-                            None => {
-                                // eprintln!("{}", warn_msg);
-                                None
-                            }
-                        }
+                        read_tag(xml_str, tag, None, Some(section))
+                            .map(|x| (x.name.clone().unwrap(), x))
                     }),
                 )
                 .collect();
@@ -113,7 +105,6 @@ pub mod mod_vlsv_reader {
                 filename: filename.to_string(),
                 variables: vars,
                 parameters: params,
-                xml: xml_string,
                 memmap: mmap,
                 root,
             })
@@ -1024,7 +1015,12 @@ pub mod mod_vlsv_reader {
         None
     }
 
-    fn read_tag(xml: &str, tag: &str, mesh: Option<&str>, name: Option<&str>) -> Option<Variable> {
+    pub fn read_tag(
+        xml: &str,
+        tag: &str,
+        mesh: Option<&str>,
+        name: Option<&str>,
+    ) -> Option<Variable> {
         let re_normal = Regex::new(&format!(
             r#"(?s)<{t}\b([^>]*)>([^<]*)</{t}>"#,
             t = regex::escape(tag)
@@ -2546,8 +2542,10 @@ pub mod mod_vlsv_c_exports {
 
 #[cfg(feature = "with_bindings")]
 pub mod mod_vlsv_py_exports {
-    use super::mod_vlsv_reader::VlsvFile;
+    use super::mod_vlsv_reader::*;
     use bytemuck::pod_read_unaligned;
+    use futures::stream::{FuturesUnordered, StreamExt};
+    use memmap2::MmapOptions;
     use ndarray::Array2;
     use ndarray::Array4;
     use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray4};
@@ -2555,6 +2553,8 @@ pub mod mod_vlsv_py_exports {
     use pyo3::exceptions::{PyIOError, PyValueError};
     use pyo3::prelude::*;
     use pyo3::wrap_pyfunction;
+    use std::{fs, io};
+    use tokio_uring::fs::File;
     //********************* Python Bindings **************************
 
     fn map_opt<T, E>(o: Option<T>, msg: E) -> PyResult<T>
@@ -2859,6 +2859,90 @@ pub mod mod_vlsv_py_exports {
         Ok(arr.into_pyarray(py).to_owned().into())
     }
 
+    //Async construction routine for VLSVFiles using uring to enable async IO
+    // https://en.wikipedia.org/wiki/Io_uring
+    pub async fn new_vslvfile_with_one(
+        path: String,
+    ) -> Result<VlsvFile, Box<dyn std::error::Error + Send + Sync>> {
+        let file = File::open(&path).await?;
+        let need = std::mem::size_of::<usize>();
+        let off_buf = vec![0u8; need];
+        let (res, off_buf) = file.read_at(off_buf, VLSV_FOOTER_LOC_START as u64).await;
+        let n = res?;
+        if n != need {
+            return Err(
+                io::Error::new(io::ErrorKind::UnexpectedEof, "Unable to read footer").into(),
+            );
+        }
+        let footer_offset = usize::from_ne_bytes(off_buf[..need].try_into().unwrap());
+        let file_len = fs::metadata(&path)?.len() as usize;
+        if footer_offset > file_len {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid footer offset").into());
+        }
+        let footer_len = file_len - footer_offset;
+
+        //This is now async no memmap yet
+        let footer = vec![0u8; footer_len];
+        let (res, footer) = file.read_at(footer, footer_offset as u64).await;
+        let n = res?;
+        let mut footer = footer;
+        footer.truncate(n);
+        let xml_str = std::str::from_utf8(&footer)?;
+        let root: VlsvRoot = serde_xml_rs::from_str(xml_str)?;
+
+        let variables = root
+            .variables
+            .iter()
+            .filter_map(|v| v.name.clone().map(|n| (n, v.clone())))
+            .chain(
+                [
+                    ("CONFIG", "config_file"),
+                    ("VERSION", "version_information"),
+                ]
+                .into_iter()
+                .filter_map(|(tag, section)| {
+                    read_tag(xml_str, tag, None, Some(section))
+                        .map(|x| (x.name.clone().unwrap(), x))
+                }),
+            )
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let parameters = root
+            .parameters
+            .iter()
+            .filter_map(|v| v.name.clone().map(|n| (n, v.clone())))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        //Now create mmap
+        let std_file = fs::File::open(&path)?;
+        let mmap = unsafe { MmapOptions::new().map(&std_file)? };
+
+        Ok(VlsvFile {
+            filename: path,
+            variables,
+            parameters,
+            memmap: mmap,
+            root,
+        })
+    }
+
+    //With concurency here to open many files from 1 thread
+    pub fn open_vlsv_files_with_uring(
+        filenames: Vec<String>,
+    ) -> Result<Vec<VlsvFile>, Box<dyn std::error::Error + Send + Sync>> {
+        tokio_uring::start(async move {
+            let mut futs = FuturesUnordered::new();
+            for f in filenames {
+                futs.push(new_vslvfile_with_one(f));
+            }
+            let mut out = Vec::with_capacity(futs.len());
+            while let Some(res) = futs.next().await {
+                out.push(res?);
+            }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(out)
+        })
+    }
+
     #[pyfunction]
     fn get_timeline_f32(
         py: Python<'_>,
@@ -2869,13 +2953,9 @@ pub mod mod_vlsv_py_exports {
     ) -> PyResult<Py<PyArray2<f32>>> {
         let n_files = filenames.len();
         let n_cids = cids.len();
-        let fptrs = filenames
-            .into_iter()
-            .map(|fname| {
-                VlsvFile::new(&fname)
-                    .unwrap_or_else(|e| panic!("ERROR: Could not open file {}:{}", fname, e))
-            })
-            .collect::<Vec<VlsvFile>>();
+        let fptrs = py
+            .allow_threads(|| open_vlsv_files_with_uring(filenames))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         let mut hints = fptrs.first().unwrap().get_hints_for_cids(&cids);
         let mut flat = vec![0f32; n_cids * n_files];
         for (fi, f) in fptrs.iter().enumerate() {
@@ -2905,13 +2985,9 @@ pub mod mod_vlsv_py_exports {
     ) -> PyResult<Py<PyArray2<f64>>> {
         let n_files = filenames.len();
         let n_cids = cids.len();
-        let fptrs = filenames
-            .into_iter()
-            .map(|fname| {
-                VlsvFile::new(&fname)
-                    .unwrap_or_else(|e| panic!("ERROR: Could not open file {}:{}", fname, e))
-            })
-            .collect::<Vec<VlsvFile>>();
+        let fptrs = py
+            .allow_threads(|| open_vlsv_files_with_uring(filenames))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         let mut hints = fptrs.first().unwrap().get_hints_for_cids(&cids);
         let mut flat = vec![0f64; n_cids * n_files];
         for (fi, f) in fptrs.iter().enumerate() {

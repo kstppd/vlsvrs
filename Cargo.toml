@@ -1,6 +1,6 @@
 [package]
 name = "vlsvrs"
-version = "0.9.2"
+version = "0.9.3"
 edition = "2024"
 license = "GPL-2.0-or-later"
 readme = "README.md"
@@ -10,6 +10,8 @@ keywords = ["vlasiator","vlsv","plasma","vdf","hpc"]
 categories = ["simulation","parsing","data-structures"]
 
 [dependencies]
+tokio-uring = {version="0.4", optional=true}
+futures = {version="0.3", optional=true}
 bytemuck = "1.22.0"
 clap = { version = "4.4", features = ["derive"],optional=true }
 libc = "0.2.174"
@@ -49,7 +51,7 @@ crate-type = ["staticlib", "cdylib","rlib"]
 
 [features]
 default = []
-with_bindings = ["dep:pyo3", "dep:numpy"]
+with_bindings = ["dep:pyo3", "dep:numpy","dep:tokio-uring","dep:futures"]
 vlsv_view = ["dep:raylib"]
 vlsv_ptr = ["dep:rayon","dep:rand","dep:rand_distr"]
 vlsv_dump = ["dep:clap"]
