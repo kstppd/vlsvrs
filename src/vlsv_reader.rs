@@ -2544,7 +2544,8 @@ pub mod mod_vlsv_c_exports {
 pub mod mod_vlsv_py_exports {
     use super::mod_vlsv_reader::*;
     use bytemuck::pod_read_unaligned;
-    use futures::stream::{FuturesUnordered, StreamExt};
+    use futures::stream::StreamExt;
+    use futures::stream::{self};
     use memmap2::MmapOptions;
     use ndarray::Array2;
     use ndarray::Array4;
@@ -2930,14 +2931,16 @@ pub mod mod_vlsv_py_exports {
     pub fn open_vlsv_files_with_uring(
         filenames: Vec<String>,
     ) -> Result<Vec<VlsvFile>, Box<dyn std::error::Error + Send + Sync>> {
+        const IO_OPS_LIMIT: usize = 1024;
         tokio_uring::start(async move {
-            let mut futs = FuturesUnordered::new();
-            for f in filenames {
-                futs.push(new_vslvfile_with_one(f));
-            }
-            let mut out = Vec::with_capacity(futs.len());
-            while let Some(res) = futs.next().await {
-                out.push(res?);
+            let results = stream::iter(filenames.into_iter().map(new_vslvfile_with_one))
+                .buffer_unordered(IO_OPS_LIMIT)
+                .collect::<Vec<_>>()
+                .await;
+
+            let mut out = Vec::with_capacity(results.len());
+            for r in results {
+                out.push(r?);
             }
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(out)
         })
