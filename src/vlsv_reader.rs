@@ -799,48 +799,86 @@ pub mod mod_vlsv_reader {
             Some(retval)
         }
 
-        pub fn read_vg_variable_at_as_ref<'a, T: bytemuck::AnyBitPattern>(
-            &'a self,
-            name: &str,
-            component: Option<i32>,
-            cid: &[usize],
-        ) -> Option<Vec<&'a T>> {
-            let mut info = self.get_dataset(name)?;
-            if info.grid.clone()? != VlasiatorGrid::SPATIALGRID {
-                panic!("This method only supports reading in VG variables");
-            }
-            let cellid_ds = self.get_dataset("CellID")?;
+        pub fn get_hints_for_cids_const<const N: usize>(&self, cids: &[usize; N]) -> [usize; N] {
+            let cellid_ds = self.get_dataset("CellID").expect("CellIDs not found!");
             let cell_id_bytes = &self.memmap
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
-            // let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
-            //     .expect("CELLIDS misaligned or wrong length");
-            let cell_ids = unsafe {
-                std::slice::from_raw_parts(
-                    cell_id_bytes.as_ptr() as *const u64,
-                    cell_id_bytes.len() / std::mem::size_of::<u64>(),
-                )
-            };
+            let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
+                .expect("CELLIDS misaligned or wrong length");
+            std::array::from_fn(|i| {
+                let cand = cids[i] as u64;
+                cell_ids
+                    .iter()
+                    .position(|x| *x == cand)
+                    .unwrap_or_else(|| panic!("Failed to find cellid {}", cand))
+            })
+        }
 
-            let indices = cid
-                .iter()
+        pub fn get_hints_for_cids(&self, cids: &[usize]) -> Vec<usize> {
+            let cellid_ds = self.get_dataset("CellID").expect("CellIDs not found!");
+            let cell_id_bytes = &self.memmap
+                [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
+            let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
+                .expect("CELLIDS misaligned or wrong length");
+            cids.iter()
                 .map(|cand| {
                     cell_ids
                         .iter()
                         .position(|x| *x == *cand as u64)
                         .expect("Failed to find cellid {cand}")
                 })
-                .collect::<Vec<usize>>();
-            let base_byte_offset = info.offset;
-            let mut retval = Vec::<&'a T>::with_capacity(indices.len());
-            unsafe { retval.set_len(indices.len()) };
-            retval.iter_mut().zip(indices).for_each(|(x, index)| {
-                info.offset =
-                    base_byte_offset + (index + component.unwrap_or(0) as usize) * info.datasize;
-                info.arraysize = 1;
-                info.vectorsize = 1;
-                let bytes = &self.memmap[info.offset..info.offset + info.datasize];
-                *x = bytemuck::from_bytes(&bytes)
-            });
+                .collect::<Vec<usize>>()
+        }
+
+        pub fn read_vg_variable_at_as_ref_dyn<'a, T>(
+            &'a self,
+            name: &str,
+            component: Option<i32>,
+            cid: &[usize],
+            hint: &mut [usize],
+        ) -> Option<Vec<&'a [u8]>>
+        where
+            T: bytemuck::AnyBitPattern,
+        {
+            let info = self.get_dataset(name)?;
+            if info.grid.clone()? != VlasiatorGrid::SPATIALGRID {
+                panic!("This method only supports reading in VG variables");
+            }
+
+            assert_eq!(
+                cid.len(),
+                hint.len(),
+                "CIDs and hint must have the same length."
+            );
+
+            if info.datasize != core::mem::size_of::<T>() {
+                panic!(
+                    "Size mismatch: dataset has datasize {}, function expects {}",
+                    info.datasize,
+                    core::mem::size_of::<T>()
+                );
+            }
+
+            let cellid_ds = self.get_dataset("CellID")?;
+            let cell_id_bytes = &self.memmap
+                [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
+            let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
+                .expect("CELLIDS misaligned or wrong length");
+
+            let mut indices = Vec::with_capacity(cid.len());
+            for (i, &c) in cid.iter().enumerate() {
+                let idx = find_near_with_hint(cell_ids, c as u64, hint[i])
+                    .unwrap_or_else(|| panic!("Failed to find cellid {}", c));
+                indices.push(idx);
+            }
+            hint.copy_from_slice(&indices);
+            let stride_bytes = info.datasize * info.vectorsize;
+            let comp = component.unwrap_or(0) as usize;
+            let mut retval = Vec::with_capacity(indices.len());
+            for idx in indices {
+                let off = info.offset + idx * stride_bytes + comp * info.datasize;
+                retval.push(&self.memmap[off..off + info.datasize]);
+            }
             Some(retval)
         }
 
@@ -850,39 +888,42 @@ pub mod mod_vlsv_reader {
             component: Option<i32>,
             cid: &[usize; N],
             hint: &mut [usize; N],
-        ) -> Option<[&'a T; N]>
+        ) -> Option<[&'a [u8]; N]>
         where
             T: bytemuck::AnyBitPattern,
         {
-            let info0 = self.get_dataset(name)?;
-            if info0.grid.clone()? != VlasiatorGrid::SPATIALGRID {
+            let info = self.get_dataset(name)?;
+            if info.grid.clone()? != VlasiatorGrid::SPATIALGRID {
                 panic!("This method only supports reading in VG variables");
+            }
+
+            if info.datasize != core::mem::size_of::<T>() {
+                panic!(
+                    "Size mismatch: dataset has datasize {}, function expects {}",
+                    info.datasize,
+                    core::mem::size_of::<T>()
+                );
             }
 
             let cellid_ds = self.get_dataset("CellID")?;
             let cell_id_bytes = &self.memmap
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
-
             let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
                 .expect("CELLIDS misaligned or wrong length");
-
-            let base_byte_offset = info0.offset;
-            let datasize = info0.datasize;
-            let comp = component.unwrap_or(0) as usize;
-
-            let indices: [usize; N] = std::array::from_fn(|i| {
+            let indices: [usize; N] = core::array::from_fn(|i| {
                 let target = cid[i] as u64;
                 let h = hint[i];
                 find_near_with_hint(cell_ids, target, h)
                     .unwrap_or_else(|| panic!("Failed to find cellid {}", target))
             });
-            //Update hint for next file
+
             hint.copy_from_slice(&indices);
-            let out: [&'a T; N] = std::array::from_fn(|i| {
-                let index = indices[i];
-                let offset = base_byte_offset + (index + comp) * datasize;
-                let bytes = &self.memmap[offset..offset + datasize];
-                bytemuck::from_bytes(bytes)
+            let stride_bytes = info.datasize * info.vectorsize;
+            let comp = component.unwrap_or(0) as usize;
+            let out: [&'a [u8]; N] = core::array::from_fn(|i| {
+                let idx = indices[i];
+                let off = info.offset + idx * stride_bytes + comp * info.datasize;
+                &self.memmap[off..off + info.datasize]
             });
             Some(out)
         }
@@ -2506,8 +2547,10 @@ pub mod mod_vlsv_c_exports {
 #[cfg(feature = "with_bindings")]
 pub mod mod_vlsv_py_exports {
     use super::mod_vlsv_reader::VlsvFile;
+    use bytemuck::pod_read_unaligned;
+    use ndarray::Array2;
     use ndarray::Array4;
-    use numpy::{IntoPyArray, PyArray1, PyArray4};
+    use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray4};
     use pyfunction;
     use pyo3::exceptions::{PyIOError, PyValueError};
     use pyo3::prelude::*;
@@ -2816,6 +2859,78 @@ pub mod mod_vlsv_py_exports {
         Ok(arr.into_pyarray(py).to_owned().into())
     }
 
+    #[pyfunction]
+    fn get_timeline_f32(
+        py: Python<'_>,
+        filenames: Vec<String>,
+        var: &str,
+        op: Option<i32>,
+        cids: Vec<usize>,
+    ) -> PyResult<Py<PyArray2<f32>>> {
+        let n_files = filenames.len();
+        let n_cids = cids.len();
+        let fptrs = filenames
+            .into_iter()
+            .map(|fname| {
+                VlsvFile::new(&fname)
+                    .unwrap_or_else(|e| panic!("ERROR: Could not open file {}:{}", fname, e))
+            })
+            .collect::<Vec<VlsvFile>>();
+        let mut hints = fptrs.first().unwrap().get_hints_for_cids(&cids);
+        let mut flat = vec![0f32; n_cids * n_files];
+        for (fi, f) in fptrs.iter().enumerate() {
+            let refs = f
+                .read_vg_variable_at_as_ref_dyn::<f32>(var, op, &cids, &mut hints)
+                .expect("PEBKAC");
+            assert_eq!(refs.len(), n_cids);
+
+            for (ci, bytes) in refs.iter().enumerate() {
+                let v = pod_read_unaligned::<f32>(bytes);
+                flat[ci * n_files + fi] = v;
+            }
+        }
+        let a = Array2::from_shape_vec((n_cids, n_files), flat).map_err(|_| {
+            PyValueError::new_err("I really do not know the conversion I copied from an example :)")
+        })?;
+        Ok(a.into_pyarray(py).to_owned().into())
+    }
+
+    #[pyfunction]
+    fn get_timeline_f64(
+        py: Python<'_>,
+        filenames: Vec<String>,
+        var: &str,
+        op: Option<i32>,
+        cids: Vec<usize>,
+    ) -> PyResult<Py<PyArray2<f64>>> {
+        let n_files = filenames.len();
+        let n_cids = cids.len();
+        let fptrs = filenames
+            .into_iter()
+            .map(|fname| {
+                VlsvFile::new(&fname)
+                    .unwrap_or_else(|e| panic!("ERROR: Could not open file {}:{}", fname, e))
+            })
+            .collect::<Vec<VlsvFile>>();
+        let mut hints = fptrs.first().unwrap().get_hints_for_cids(&cids);
+        let mut flat = vec![0f64; n_cids * n_files];
+        for (fi, f) in fptrs.iter().enumerate() {
+            let refs = f
+                .read_vg_variable_at_as_ref_dyn::<f64>(var, op, &cids, &mut hints)
+                .expect("PEBKAC");
+            assert_eq!(refs.len(), n_cids);
+
+            for (ci, bytes) in refs.iter().enumerate() {
+                let v = pod_read_unaligned::<f64>(bytes);
+                flat[ci * n_files + fi] = v;
+            }
+        }
+        let a = Array2::from_shape_vec((n_cids, n_files), flat).map_err(|_| {
+            PyValueError::new_err("I really do not know the conversion I copied from an example :)")
+        })?;
+        Ok(a.into_pyarray(py).to_owned().into())
+    }
+
     // -------------------- module --------------------
     #[pymodule(name = "vlsvrs")]
     fn vlsvrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -2824,6 +2939,8 @@ pub mod mod_vlsv_py_exports {
         m.add_function(wrap_pyfunction!(read_variable_f64, m)?)?;
         m.add_function(wrap_pyfunction!(read_vdf_f32, m)?)?;
         m.add_function(wrap_pyfunction!(read_vdf_f64, m)?)?;
+        m.add_function(wrap_pyfunction!(get_timeline_f32, m)?)?;
+        m.add_function(wrap_pyfunction!(get_timeline_f64, m)?)?;
         Ok(())
     }
 }
