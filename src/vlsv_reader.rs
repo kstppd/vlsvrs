@@ -2177,6 +2177,46 @@ pub mod mod_vlsv_c_exports {
         Grid::<f64>::new(dims, f.get_spatial_mesh_extents().unwrap(), ptr)
     }
 
+    #[unsafe(export_name = "read_var_zoom_32")]
+    pub unsafe fn read_var_zoom_32(
+        filename: *const c_char,
+        varname: *const c_char,
+        op: i32,
+        scale_factor: f64,
+    ) -> Grid<f32> {
+        let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
+        let var = unsafe { CStr::from_ptr(varname).to_str().unwrap() };
+        let f = VlsvFile::new(name).unwrap();
+        let var: Array4<f32> = f
+            .read_variable_zoom::<f32>(var, Some(op), scale_factor)
+            .unwrap();
+        let dims = var.dim();
+        let mut vec = var.into_raw_vec_and_offset().0;
+        let ptr = vec.as_mut_ptr();
+        std::mem::forget(vec);
+        Grid::<f32>::new(dims, f.get_spatial_mesh_extents().unwrap(), ptr)
+    }
+
+    #[unsafe(export_name = "read_var_zoom_64")]
+    pub unsafe fn read_var_zoom_64(
+        filename: *const c_char,
+        varname: *const c_char,
+        op: i32,
+        scale_factor: f64,
+    ) -> Grid<f64> {
+        let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
+        let var = unsafe { CStr::from_ptr(varname).to_str().unwrap() };
+        let f = VlsvFile::new(name).unwrap();
+        let var: Array4<f64> = f
+            .read_variable_zoom::<f64>(var, Some(op), scale_factor)
+            .unwrap();
+        let dims = var.dim();
+        let mut vec = var.into_raw_vec_and_offset().0;
+        let ptr = vec.as_mut_ptr();
+        std::mem::forget(vec);
+        Grid::<f64>::new(dims, f.get_spatial_mesh_extents().unwrap(), ptr)
+    }
+
     #[unsafe(export_name = "read_vdf_32")]
     pub unsafe fn read_vdf_32(
         filename: *const c_char,
