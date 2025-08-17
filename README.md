@@ -102,7 +102,7 @@ Install [maturin](https://github.com/PyO3/maturin) and numpy:
 ```bash
 pip install maturin,numpy
 maturin develop -F with_bindings --release
-#If you are building on Linux and your kernel version is 5.1+ then enable io uring 
+#If you are building on Linux and your kernel (check with ```uname -r```) version is 5.1+ then enable io uring 
 maturin develop -F with_bindings,uring --release
 ```
 Now you can do:
