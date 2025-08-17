@@ -99,8 +99,17 @@ The module is built into the `./fortran_bindings` folder. Note the signatures: i
 ## Python Bindings
 Install [maturin](https://github.com/PyO3/maturin) and numpy:
 
+With pip:
+```bash
+git clone https://github.com/kstppd/vlsvrs
+cd vlsvrs/
+pip install .
+```
+Or:
 ```bash
 pip install maturin,numpy
+git clone https://github.com/kstppd/vlsvrs
+cd vlsvrs/
 maturin develop -F with_bindings --release
 #If you are building on Linux and your kernel (check with ```uname -r```) version is 5.1+ then enable io uring 
 maturin develop -F with_bindings,uring --release

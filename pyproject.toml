@@ -1,0 +1,30 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+dependencies = ["numpy>=1.21"]
+
+[project]
+name = "vlsvrs"
+version = "0.9.4" 
+description = "VLSV file format reader and toolkit (Rust core with Python bindings)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "GPL-2.0-or-later" }
+authors = [{ name = "Kostis Papadakis" }]
+keywords = ["vlsv", "vlasiator", "plasma", "HPC"]
+
+
+[project.urls]
+Homepage = "https://github.com/kstppd/vlsvrs"
+Repository = "https://github.com/kstppd/vlsvrs"
+Issues = "https://github.com/kstppd/vlsvrs/issues"
+
+[tool.maturin]
+bindings = "pyo3"
+
+no-default-features = true
+features = ["with_bindings","uring"]
+
+profile = "release"
+module-name = "vlsvrs"
