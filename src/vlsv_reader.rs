@@ -2963,14 +2963,14 @@ pub mod mod_vlsv_py_exports {
     fn open_vlsv_files_fast(filenames: Vec<String>) -> Vec<VlsvFile> {
         #[cfg(all(feature = "uring", target_os = "linux"))]
         {
-            println!("Opening files using Uring");
+            // println!("Opening files using Uring");
             return open_vlsv_files_with_uring(filenames);
         }
 
         #[cfg(not(all(feature = "uring")))]
         {
             const THREAD_LIMIT: usize = 16;
-            println!("Opening files using mini Thread Pool");
+            // println!("Opening files using mini Thread Pool");
             return open_vlsv_files_with_threads(filenames, THREAD_LIMIT);
         }
     }
