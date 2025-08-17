@@ -443,7 +443,7 @@ pub mod mod_vlsv_reader {
                 .get(name)
                 .or_else(|| self.parameters.get(name))
                 .or_else(|| {
-                    eprintln!("'{}' not found in VARIABLES or PARAMETERS", name);
+                    eprintln!("'{name}' not found in VARIABLES or PARAMETERS");
                     None
                 })?
                 .clone()
@@ -501,9 +501,9 @@ pub mod mod_vlsv_reader {
                 let n_per_task = global_cells / ntasks;
                 let remainder = global_cells % ntasks;
                 if my_n < remainder {
-                    return my_n * (n_per_task + 1);
+                    my_n * (n_per_task + 1)
                 } else {
-                    return my_n * n_per_task + remainder;
+                    my_n * n_per_task + remainder
                 }
             }
 
@@ -511,9 +511,9 @@ pub mod mod_vlsv_reader {
                 let n_per_task = global_cells / ntasks;
                 let remainder = global_cells % ntasks;
                 if my_n < remainder {
-                    return n_per_task + 1;
+                    n_per_task + 1
                 } else {
-                    return n_per_task;
+                    n_per_task
                 }
             }
 
@@ -522,21 +522,21 @@ pub mod mod_vlsv_reader {
             let bbox = [nx, ny, nz];
             let mut ordered_var = Array4::<T>::zeros((nx, ny, nz, info.vectorsize));
             let mut current_offset = 0;
-            for i in 0..ntasks as usize {
+            for i in 0..ntasks {
                 let x = (i / decomp[2]) / decomp[1];
                 let y = (i / decomp[2]) % decomp[1];
                 let z = i % decomp[2];
 
                 let task_size = [
-                    calc_local_size(bbox[0] as usize, decomp[0], x),
-                    calc_local_size(bbox[1] as usize, decomp[1], y),
-                    calc_local_size(bbox[2] as usize, decomp[2], z),
+                    calc_local_size(bbox[0], decomp[0], x),
+                    calc_local_size(bbox[1], decomp[1], y),
+                    calc_local_size(bbox[2], decomp[2], z),
                 ];
 
                 let task_start = [
-                    calc_local_start(bbox[0] as usize, decomp[0], x),
-                    calc_local_start(bbox[1] as usize, decomp[1], y),
-                    calc_local_start(bbox[2] as usize, decomp[2], z),
+                    calc_local_start(bbox[0], decomp[0], x),
+                    calc_local_start(bbox[1], decomp[1], y),
+                    calc_local_start(bbox[2], decomp[2], z),
                 ];
 
                 let task_end = [
@@ -801,7 +801,7 @@ pub mod mod_vlsv_reader {
                 cell_ids
                     .iter()
                     .position(|x| *x == cand)
-                    .unwrap_or_else(|| panic!("Failed to find cellid {}", cand))
+                    .unwrap_or_else(|| panic!("Failed to find cellid {cand}"))
             })
         }
 
@@ -859,7 +859,7 @@ pub mod mod_vlsv_reader {
             let mut indices = Vec::with_capacity(cid.len());
             for (i, &c) in cid.iter().enumerate() {
                 let idx = find_near_with_hint(cell_ids, c as u64, hint[i])
-                    .unwrap_or_else(|| panic!("Failed to find cellid {}", c));
+                    .unwrap_or_else(|| panic!("Failed to find cellid {c}"));
                 indices.push(idx);
             }
             hint.copy_from_slice(&indices);
@@ -905,7 +905,7 @@ pub mod mod_vlsv_reader {
                 let target = cid[i] as u64;
                 let h = hint[i];
                 find_near_with_hint(cell_ids, target, h)
-                    .unwrap_or_else(|| panic!("Failed to find cellid {}", target))
+                    .unwrap_or_else(|| panic!("Failed to find cellid {target}"))
             });
 
             hint.copy_from_slice(&indices);
@@ -1096,7 +1096,7 @@ pub mod mod_vlsv_reader {
         let Some(op) = op else { return };
 
         match op {
-            0 | 1 | 2 | 3 => {}
+            0..=3 => {}
             4 => {
                 for mut lane in arr.lanes_mut(Axis(3)) {
                     // compute in f64 for safety
@@ -1180,7 +1180,7 @@ pub mod mod_vlsv_reader {
             let c0 = c00 * (1.0 - fy) + c10 * fy;
             let c1 = c01 * (1.0 - fy) + c11 * fy;
 
-            return c0 * (1.0 - fz) + c1 * fz;
+            c0 * (1.0 - fz) + c1 * fz
         }
 
         let (sx, sy, sz, sc) = src.dim();
@@ -1474,35 +1474,35 @@ pub mod mod_vlsv_reader {
                     .as_deref()
                     .ok_or("Missing offset")?
                     .parse::<usize>()
-                    .map_err(|e| format!("Invalid offset: {}", e))?,
+                    .map_err(|e| format!("Invalid offset: {e}"))?,
 
                 arraysize: var
                     .arraysize
                     .as_deref()
                     .ok_or("Missing arraysize")?
                     .parse::<usize>()
-                    .map_err(|e| format!("Invalid arraysize: {}", e))?,
+                    .map_err(|e| format!("Invalid arraysize: {e}"))?,
 
                 vectorsize: var
                     .vectorsize
                     .as_deref()
                     .unwrap_or("1")
                     .parse::<usize>()
-                    .map_err(|e| format!("Invalid vectorsize: {}", e))?,
+                    .map_err(|e| format!("Invalid vectorsize: {e}"))?,
 
                 datasize: var
                     .datasize
                     .as_deref()
                     .ok_or("Missing datasize")?
                     .parse::<usize>()
-                    .map_err(|e| format!("Invalid datasize: {}", e))?,
+                    .map_err(|e| format!("Invalid datasize: {e}"))?,
 
                 datatype: var
                     .datatype
                     .as_deref()
                     .ok_or("Missing datatype")?
                     .parse::<DataType>()
-                    .map_err(|e| format!("{e}"))?,
+                    .map_err(|e| e.to_string())?,
                 grid: g,
             })
         }
@@ -1523,35 +1523,35 @@ pub mod mod_vlsv_reader {
                     .as_ref()
                     .ok_or("Missing offset")?
                     .parse::<usize>()
-                    .map_err(|e| format!("Invalid offset: {}", e))?,
+                    .map_err(|e| format!("Invalid offset: {e}"))?,
 
                 arraysize: var
                     .arraysize
                     .as_ref()
                     .ok_or("Missing arraysize")?
                     .parse::<usize>()
-                    .map_err(|e| format!("Invalid arraysize: {}", e))?,
+                    .map_err(|e| format!("Invalid arraysize: {e}"))?,
 
                 vectorsize: var
                     .vectorsize
                     .as_ref()
                     .unwrap_or(&"1".to_string())
                     .parse::<usize>()
-                    .map_err(|e| format!("Invalid vectorsize: {}", e))?,
+                    .map_err(|e| format!("Invalid vectorsize: {e}"))?,
 
                 datasize: var
                     .datasize
                     .as_ref()
                     .ok_or("Missing datasize")?
                     .parse::<usize>()
-                    .map_err(|e| format!("Invalid datasize: {}", e))?,
+                    .map_err(|e| format!("Invalid datasize: {e}"))?,
 
                 datatype: var
                     .datatype
                     .as_deref()
                     .ok_or("Missing datatype")?
                     .parse::<DataType>()
-                    .map_err(|e| format!("{e}"))?,
+                    .map_err(|e| e.to_string())?,
                 grid: g,
             })
         }
@@ -1573,7 +1573,7 @@ pub mod mod_vlsv_reader {
                 "SPATIALGRID" => Ok(VlasiatorGrid::SPATIALGRID),
                 "IONOSPHERE" => Ok(VlasiatorGrid::IONOSPHERE),
                 "PROTON" => Ok(VlasiatorGrid::VMESH),
-                other => panic!("Unknown VlasiatorGrid type: {}", other),
+                other => panic!("Unknown VlasiatorGrid type: {other}"),
             }
         }
     }
