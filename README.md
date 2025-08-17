@@ -100,8 +100,10 @@ The module is built into the `./fortran_bindings` folder. Note the signatures: i
 Install [maturin](https://github.com/PyO3/maturin):
 
 ```bash
-pip install maturin
+pip install maturin,numpy
 maturin develop -F with_bindings --release
+#If you are building on Linux and your kernel version is 5.1+ then enable io uring 
+maturin develop -F with_bindings,uring --release
 ```
 Now you can do:
 ```python

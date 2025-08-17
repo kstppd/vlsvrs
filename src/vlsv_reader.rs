@@ -2544,9 +2544,6 @@ pub mod mod_vlsv_c_exports {
 pub mod mod_vlsv_py_exports {
     use super::mod_vlsv_reader::*;
     use bytemuck::pod_read_unaligned;
-    use futures::stream::StreamExt;
-    use futures::stream::{self};
-    use memmap2::MmapOptions;
     use ndarray::Array2;
     use ndarray::Array4;
     use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray4};
@@ -2554,8 +2551,6 @@ pub mod mod_vlsv_py_exports {
     use pyo3::exceptions::{PyIOError, PyValueError};
     use pyo3::prelude::*;
     use pyo3::wrap_pyfunction;
-    use std::{fs, io};
-    use tokio_uring::fs::File;
     //********************* Python Bindings **************************
 
     fn map_opt<T, E>(o: Option<T>, msg: E) -> PyResult<T>
@@ -2862,9 +2857,13 @@ pub mod mod_vlsv_py_exports {
 
     //Async construction routine for VLSVFiles using uring to enable async IO
     // https://en.wikipedia.org/wiki/Io_uring
+    #[cfg(all(feature = "uring", target_os = "linux"))]
     pub async fn new_vslvfile_with_one(
         path: String,
     ) -> Result<VlsvFile, Box<dyn std::error::Error + Send + Sync>> {
+        use memmap2::MmapOptions;
+        use std::{fs, io};
+        use tokio_uring::fs::File;
         let file = File::open(&path).await?;
         let need = std::mem::size_of::<usize>();
         let off_buf = vec![0u8; need];
@@ -2928,9 +2927,10 @@ pub mod mod_vlsv_py_exports {
     }
 
     //With concurency here to open many files from 1 thread
-    pub fn open_vlsv_files_with_uring(
-        filenames: Vec<String>,
-    ) -> Result<Vec<VlsvFile>, Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(all(feature = "uring", target_os = "linux"))]
+    fn open_vlsv_files_with_uring(filenames: Vec<String>) -> Vec<VlsvFile> {
+        use futures::stream::StreamExt;
+        use futures::stream::{self};
         const IO_OPS_LIMIT: usize = 1024;
         tokio_uring::start(async move {
             let results = stream::iter(filenames.into_iter().map(new_vslvfile_with_one))
@@ -2940,10 +2940,39 @@ pub mod mod_vlsv_py_exports {
 
             let mut out = Vec::with_capacity(results.len());
             for r in results {
-                out.push(r?);
+                out.push(r.unwrap());
             }
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(out)
+            out
         })
+    }
+
+    fn open_vlsv_files_with_threads(filenames: Vec<String>, max_threads: usize) -> Vec<VlsvFile> {
+        use rayon::prelude::*;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(max_threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            filenames
+                .into_par_iter()
+                .map(|f| VlsvFile::new(&f).unwrap())
+                .collect::<Vec<VlsvFile>>()
+        })
+    }
+
+    fn open_vlsv_files_fast(filenames: Vec<String>) -> Vec<VlsvFile> {
+        #[cfg(all(feature = "uring", target_os = "linux"))]
+        {
+            println!("Opening files using Uring");
+            return open_vlsv_files_with_uring(filenames);
+        }
+
+        #[cfg(not(all(feature = "uring")))]
+        {
+            const THREAD_LIMIT: usize = 16;
+            println!("Opening files using mini Thread Pool");
+            return open_vlsv_files_with_threads(filenames, THREAD_LIMIT);
+        }
     }
 
     #[pyfunction]
@@ -2956,9 +2985,7 @@ pub mod mod_vlsv_py_exports {
     ) -> PyResult<Py<PyArray2<f32>>> {
         let n_files = filenames.len();
         let n_cids = cids.len();
-        let fptrs = py
-            .allow_threads(|| open_vlsv_files_with_uring(filenames))
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let fptrs = py.allow_threads(|| open_vlsv_files_fast(filenames));
         let mut hints = fptrs.first().unwrap().get_hints_for_cids(&cids);
         let mut flat = vec![0f32; n_cids * n_files];
         for (fi, f) in fptrs.iter().enumerate() {
@@ -2988,9 +3015,7 @@ pub mod mod_vlsv_py_exports {
     ) -> PyResult<Py<PyArray2<f64>>> {
         let n_files = filenames.len();
         let n_cids = cids.len();
-        let fptrs = py
-            .allow_threads(|| open_vlsv_files_with_uring(filenames))
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let fptrs = py.allow_threads(|| open_vlsv_files_fast(filenames));
         let mut hints = fptrs.first().unwrap().get_hints_for_cids(&cids);
         let mut flat = vec![0f64; n_cids * n_files];
         for (fi, f) in fptrs.iter().enumerate() {
