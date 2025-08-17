@@ -97,7 +97,6 @@ gfortran vlsvrs.mod main.f90 -Wall -Wextra -Wno-conversion -Wno-c-binding-type -
 The module is built into the `./fortran_bindings` folder. Note the signatures: integer kind is 8 for cell id, and strings in fortran vs c are a bit of black magic, requiring null chars and trim. 
 
 ## Python Bindings
-Install [maturin](https://github.com/PyO3/maturin) and numpy:
 
 With pip:
 ```bash
@@ -105,6 +104,7 @@ git clone https://github.com/kstppd/vlsvrs
 cd vlsvrs/
 pip install .
 ```
+
 Or:
 ```bash
 pip install maturin,numpy
