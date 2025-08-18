@@ -55,6 +55,7 @@ pub mod mod_vlsv_reader {
     use ndarray::{Array4, ArrayView1};
     use ndarray::{Axis, Order, s};
     use num_traits::{Num, NumCast, Zero};
+    use once_cell::sync::OnceCell;
     use regex::Regex;
     use serde::Deserialize;
     use std::{collections::HashMap, str::FromStr};
@@ -65,7 +66,7 @@ pub mod mod_vlsv_reader {
         pub filename: String,
         pub variables: HashMap<String, Variable>,
         pub parameters: HashMap<String, Variable>,
-        pub memmap: Mmap,
+        memmap: OnceCell<Mmap>,
         pub root: VlsvRoot,
     }
 
@@ -105,8 +106,91 @@ pub mod mod_vlsv_reader {
                 filename: filename.to_string(),
                 variables: vars,
                 parameters: params,
-                memmap: mmap,
+                memmap: {
+                    let cell = OnceCell::new();
+                    let _ = cell.set(mmap);
+                    cell
+                },
                 root,
+            })
+        }
+
+        #[cfg(all(feature = "uring", target_os = "linux"))]
+        pub async fn new_uring(filename: &str) -> Result<Self, Box<dyn std::error::Error>> {
+            // println!("Reading with IO Uring");
+            use std::io::Error;
+            use tokio_uring::fs::File;
+            async fn read_exact_at_uring(
+                file: &File,
+                offset: u64,
+                len: usize,
+            ) -> Result<Vec<u8>, Error> {
+                let buf = vec![0u8; len];
+                let (res, buf) = file.read_at(buf, offset).await;
+                let n = res?;
+                if n != len {
+                    panic!();
+                }
+                Ok(buf)
+            }
+            let file = File::open(filename).await?;
+            let len_footer = VLSV_FOOTER_LOC_END - VLSV_FOOTER_LOC_START;
+            let footer_buf =
+                read_exact_at_uring(&file, VLSV_FOOTER_LOC_START as u64, len_footer).await?;
+            let footer_offset = usize::from_ne_bytes(footer_buf[..len_footer].try_into()?);
+
+            let file_size = std::fs::metadata(filename)?.len() as usize;
+            if footer_offset > file_size {
+                panic!();
+            }
+            let xml_len = file_size - footer_offset;
+
+            let xml_buf = read_exact_at_uring(&file, footer_offset as u64, xml_len).await?;
+            let xml_str = std::str::from_utf8(&xml_buf)?;
+            let root: VlsvRoot = serde_xml_rs::from_str(xml_str)?;
+
+            let vars: HashMap<String, Variable> = root
+                .variables
+                .iter()
+                .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
+                .chain(
+                    [
+                        ("CONFIG", "config_file", "Config not available!"),
+                        ("VERSION", "version_information", "Version not available!"),
+                    ]
+                    .into_iter()
+                    .filter_map(|(tag, section, _)| {
+                        read_tag(xml_str, tag, None, Some(section))
+                            .map(|x| (x.name.clone().unwrap(), x))
+                    }),
+                )
+                .collect();
+
+            let params: HashMap<String, Variable> = root
+                .parameters
+                .iter()
+                .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
+                .collect();
+
+            Ok(Self {
+                filename: filename.to_string(),
+                variables: vars,
+                parameters: params,
+                memmap: OnceCell::new(),
+                root,
+            })
+        }
+
+        #[inline(always)]
+        pub fn my_map(&self) -> &memmap2::Mmap {
+            self.memmap.get_or_init(|| {
+                let file = std::fs::File::open(&self.filename)
+                    .unwrap_or_else(|e| panic!("mmap open('{}') failed: {e}", self.filename));
+                unsafe {
+                    memmap2::MmapOptions::new()
+                        .map(&file)
+                        .unwrap_or_else(|e| panic!("mmap map('{}') failed: {e}", self.filename))
+                }
             })
         }
 
@@ -116,10 +200,10 @@ pub mod mod_vlsv_reader {
             assert!(info.arraysize == 1);
             let expected_bytes = info.datasize * info.vectorsize;
             assert!(
-                info.offset + expected_bytes <= self.memmap.len(),
+                info.offset + expected_bytes <= self.my_map().len(),
                 "Attempt to read out-of-bounds from memory map"
             );
-            let src_bytes = &self.memmap[info.offset..info.offset + expected_bytes];
+            let src_bytes = &self.my_map()[info.offset..info.offset + expected_bytes];
             let retval = match info.datasize {
                 8 => {
                     let mut buffer: [u8; 8] = [0; 8];
@@ -152,10 +236,10 @@ pub mod mod_vlsv_reader {
             let info = self.get_dataset(NAME)?;
             let expected_bytes = info.datasize * info.vectorsize * info.arraysize;
             assert!(
-                info.offset + expected_bytes <= self.memmap.len(),
+                info.offset + expected_bytes <= self.my_map().len(),
                 "Attempt to read out-of-bounds from memory map"
             );
-            let bytes = &self.memmap[info.offset..info.offset + expected_bytes];
+            let bytes = &self.my_map()[info.offset..info.offset + expected_bytes];
             let cfgfile = std::str::from_utf8(bytes).map(|s| s.to_owned()).ok()?;
             Some(cfgfile)
         }
@@ -165,10 +249,10 @@ pub mod mod_vlsv_reader {
             let info = self.get_dataset(NAME)?;
             let expected_bytes = info.datasize * info.vectorsize * info.arraysize;
             assert!(
-                info.offset + expected_bytes <= self.memmap.len(),
+                info.offset + expected_bytes <= self.my_map().len(),
                 "Attempt to read out-of-bounds from memory map"
             );
-            let bytes = &self.memmap[info.offset..info.offset + expected_bytes];
+            let bytes = &self.my_map()[info.offset..info.offset + expected_bytes];
             let version = std::str::from_utf8(bytes).map(|s| s.to_owned()).ok()?;
             Some(version)
         }
@@ -194,7 +278,7 @@ pub mod mod_vlsv_reader {
             };
             let expected_bytes = info.datasize * info.arraysize * info.vectorsize;
             let end = info.offset + expected_bytes;
-            let src_bytes = &self.memmap[info.offset..end];
+            let src_bytes = &self.my_map()[info.offset..end];
             let dst_bytes = bytemuck::cast_slice_mut::<T, u8>(dst);
 
             /*
@@ -792,7 +876,7 @@ pub mod mod_vlsv_reader {
 
         pub fn get_hints_for_cids_const<const N: usize>(&self, cids: &[usize; N]) -> [usize; N] {
             let cellid_ds = self.get_dataset("CellID").expect("CellIDs not found!");
-            let cell_id_bytes = &self.memmap
+            let cell_id_bytes = &self.my_map()
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
             let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
                 .expect("CELLIDS misaligned or wrong length");
@@ -807,7 +891,7 @@ pub mod mod_vlsv_reader {
 
         pub fn get_hints_for_cids(&self, cids: &[usize]) -> Vec<usize> {
             let cellid_ds = self.get_dataset("CellID").expect("CellIDs not found!");
-            let cell_id_bytes = &self.memmap
+            let cell_id_bytes = &self.my_map()
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
             let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
                 .expect("CELLIDS misaligned or wrong length");
@@ -851,7 +935,7 @@ pub mod mod_vlsv_reader {
             }
 
             let cellid_ds = self.get_dataset("CellID")?;
-            let cell_id_bytes = &self.memmap
+            let cell_id_bytes = &self.my_map()
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
             let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
                 .expect("CELLIDS misaligned or wrong length");
@@ -868,7 +952,7 @@ pub mod mod_vlsv_reader {
             let mut retval = Vec::with_capacity(indices.len());
             for idx in indices {
                 let off = info.offset + idx * stride_bytes + comp * info.datasize;
-                retval.push(&self.memmap[off..off + info.datasize]);
+                retval.push(&self.my_map()[off..off + info.datasize]);
             }
             Some(retval)
         }
@@ -897,7 +981,7 @@ pub mod mod_vlsv_reader {
             }
 
             let cellid_ds = self.get_dataset("CellID")?;
-            let cell_id_bytes = &self.memmap
+            let cell_id_bytes = &self.my_map()
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
             let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
                 .expect("CELLIDS misaligned or wrong length");
@@ -914,7 +998,7 @@ pub mod mod_vlsv_reader {
             let out: [&'a [u8]; N] = core::array::from_fn(|i| {
                 let idx = indices[i];
                 let off = info.offset + idx * stride_bytes + comp * info.datasize;
-                &self.memmap[off..off + info.datasize]
+                &self.my_map()[off..off + info.datasize]
             });
             Some(out)
         }
@@ -2855,77 +2939,6 @@ pub mod mod_vlsv_py_exports {
         Ok(arr.into_pyarray(py).to_owned().into())
     }
 
-    //Async construction routine for VLSVFiles using uring to enable async IO
-    // https://en.wikipedia.org/wiki/Io_uring
-    #[cfg(all(feature = "uring", target_os = "linux"))]
-    pub async fn new_vslvfile_with_one(
-        path: String,
-    ) -> Result<VlsvFile, Box<dyn std::error::Error + Send + Sync>> {
-        use memmap2::MmapOptions;
-        use std::{fs, io};
-        use tokio_uring::fs::File;
-        let file = File::open(&path).await?;
-        let need = std::mem::size_of::<usize>();
-        let off_buf = vec![0u8; need];
-        let (res, off_buf) = file.read_at(off_buf, VLSV_FOOTER_LOC_START as u64).await;
-        let n = res?;
-        if n != need {
-            return Err(
-                io::Error::new(io::ErrorKind::UnexpectedEof, "Unable to read footer").into(),
-            );
-        }
-        let footer_offset = usize::from_ne_bytes(off_buf[..need].try_into().unwrap());
-        let file_len = fs::metadata(&path)?.len() as usize;
-        if footer_offset > file_len {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid footer offset").into());
-        }
-        let footer_len = file_len - footer_offset;
-
-        //This is now async no memmap yet
-        let footer = vec![0u8; footer_len];
-        let (res, footer) = file.read_at(footer, footer_offset as u64).await;
-        let n = res?;
-        let mut footer = footer;
-        footer.truncate(n);
-        let xml_str = std::str::from_utf8(&footer)?;
-        let root: VlsvRoot = serde_xml_rs::from_str(xml_str)?;
-
-        let variables = root
-            .variables
-            .iter()
-            .filter_map(|v| v.name.clone().map(|n| (n, v.clone())))
-            .chain(
-                [
-                    ("CONFIG", "config_file"),
-                    ("VERSION", "version_information"),
-                ]
-                .into_iter()
-                .filter_map(|(tag, section)| {
-                    read_tag(xml_str, tag, None, Some(section))
-                        .map(|x| (x.name.clone().unwrap(), x))
-                }),
-            )
-            .collect::<std::collections::HashMap<_, _>>();
-
-        let parameters = root
-            .parameters
-            .iter()
-            .filter_map(|v| v.name.clone().map(|n| (n, v.clone())))
-            .collect::<std::collections::HashMap<_, _>>();
-
-        //Now create mmap
-        let std_file = fs::File::open(&path)?;
-        let mmap = unsafe { MmapOptions::new().map(&std_file)? };
-
-        Ok(VlsvFile {
-            filename: path,
-            variables,
-            parameters,
-            memmap: mmap,
-            root,
-        })
-    }
-
     //With concurency here to open many files from 1 thread
     #[cfg(all(feature = "uring", target_os = "linux"))]
     fn open_vlsv_files_with_uring(filenames: Vec<String>) -> Vec<VlsvFile> {
@@ -2933,11 +2946,14 @@ pub mod mod_vlsv_py_exports {
         use futures::stream::{self};
         const IO_OPS_LIMIT: usize = 1024;
         tokio_uring::start(async move {
-            let results = stream::iter(filenames.into_iter().map(new_vslvfile_with_one))
-                .bufferred(IO_OPS_LIMIT)
-                .collect::<Vec<_>>()
-                .await;
-
+            let results = stream::iter(
+                filenames
+                    .into_iter()
+                    .map(|path| async move { VlsvFile::new_uring(&path).await }),
+            )
+            .buffered(IO_OPS_LIMIT)
+            .collect::<Vec<_>>()
+            .await;
             let mut out = Vec::with_capacity(results.len());
             for r in results {
                 out.push(r.unwrap());
