@@ -294,62 +294,54 @@ pub mod mod_vlsv_reader {
                 dst_bytes.copy_from_slice(src_bytes);
                 return;
             }
-            unsafe {
-                //f32=>f64
-                if type_on_disk == DataType::Float
-                    && info.datasize == std::mem::size_of::<f32>()
-                    && type_of_t == DataType::Float
-                    && std::mem::size_of::<T>() == std::mem::size_of::<f64>()
+            //f32=>f64
+            if type_on_disk == DataType::Float
+                && info.datasize == std::mem::size_of::<f32>()
+                && type_of_t == DataType::Float
+                && std::mem::size_of::<T>() == std::mem::size_of::<f64>()
+            {
+                let dst_f64: &mut [f64] = bytemuck::cast_slice_mut(dst);
+                for (i, bytes) in src_bytes
+                    .chunks_exact(std::mem::size_of::<f32>())
+                    .enumerate()
                 {
-                    let dst_f64: &mut [f64] =
-                        std::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<f64>(), dst.len());
-
-                    for (i, bytes) in src_bytes
-                        .chunks_exact(std::mem::size_of::<f32>())
-                        .enumerate()
-                    {
-                        let v64 = f32::from_le_bytes(bytes.try_into().unwrap()) as f64;
-                        dst_f64[i] = v64;
-                    }
-                    return;
+                    let v64 = f32::from_le_bytes(bytes.try_into().unwrap()) as f64;
+                    dst_f64[i] = v64;
                 }
-                //f64=>f32
-                if type_on_disk == DataType::Float
-                    && info.datasize == std::mem::size_of::<f64>()
-                    && std::mem::size_of::<T>() == std::mem::size_of::<f32>()
-                    && type_of_t == DataType::Float
+                return;
+            }
+            //f64=>f32
+            if type_on_disk == DataType::Float
+                && info.datasize == std::mem::size_of::<f64>()
+                && std::mem::size_of::<T>() == std::mem::size_of::<f32>()
+                && type_of_t == DataType::Float
+            {
+                let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
+                for (i, bytes) in src_bytes
+                    .chunks_exact(std::mem::size_of::<f64>())
+                    .enumerate()
                 {
-                    let dst_f32: &mut [f32] =
-                        std::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<f32>(), dst.len());
-
-                    for (i, bytes) in src_bytes
-                        .chunks_exact(std::mem::size_of::<f64>())
-                        .enumerate()
-                    {
-                        let v32 = f64::from_le_bytes(bytes.try_into().unwrap()) as f32;
-                        dst_f32[i] = v32;
-                    }
-                    return;
+                    let v32 = f64::from_le_bytes(bytes.try_into().unwrap()) as f32;
+                    dst_f32[i] = v32;
                 }
-                //i32=>f32
-                if type_on_disk == DataType::Int
-                    && info.datasize == std::mem::size_of::<i32>()
-                    && std::mem::size_of::<T>() == std::mem::size_of::<f32>()
-                    && type_of_t == DataType::Float
+                return;
+            }
+            //i32=>f32
+            if type_on_disk == DataType::Int
+                && info.datasize == std::mem::size_of::<i32>()
+                && std::mem::size_of::<T>() == std::mem::size_of::<f32>()
+                && type_of_t == DataType::Float
+            {
+                let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
+                for (i, bytes) in src_bytes
+                    .chunks_exact(std::mem::size_of::<i32>())
+                    .enumerate()
                 {
-                    let dst_f32: &mut [f32] =
-                        std::slice::from_raw_parts_mut(dst.as_mut_ptr().cast::<f32>(), dst.len());
-
-                    for (i, bytes) in src_bytes
-                        .chunks_exact(std::mem::size_of::<i32>())
-                        .enumerate()
-                    {
-                        let cand = i32::from_ne_bytes(bytes.try_into().unwrap());
-                        let v32 = cand as f32;
-                        dst_f32[i] = v32;
-                    }
-                    return;
+                    let cand = i32::from_ne_bytes(bytes.try_into().unwrap());
+                    let v32 = cand as f32;
+                    dst_f32[i] = v32;
                 }
+                return;
             }
             //Any other mismatch panics!
             panic!(
