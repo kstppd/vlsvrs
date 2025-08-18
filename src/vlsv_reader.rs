@@ -182,14 +182,14 @@ pub mod mod_vlsv_reader {
         }
 
         #[inline(always)]
-        pub fn my_map(&self) -> &memmap2::Mmap {
+        fn my_map(&self) -> &memmap2::Mmap {
             self.memmap.get_or_init(|| {
                 let file = std::fs::File::open(&self.filename)
-                    .unwrap_or_else(|e| panic!("mmap open('{}') failed: {e}", self.filename));
+                    .unwrap_or_else(|e| panic!("ERROR:mmap open('{}') failed: {e}", self.filename));
                 unsafe {
-                    memmap2::MmapOptions::new()
-                        .map(&file)
-                        .unwrap_or_else(|e| panic!("mmap map('{}') failed: {e}", self.filename))
+                    memmap2::MmapOptions::new().map(&file).unwrap_or_else(|e| {
+                        panic!("ERROR:mmap map('{}') failed: {e}", self.filename)
+                    })
                 }
             })
         }
