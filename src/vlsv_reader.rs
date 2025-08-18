@@ -2934,7 +2934,7 @@ pub mod mod_vlsv_py_exports {
         const IO_OPS_LIMIT: usize = 1024;
         tokio_uring::start(async move {
             let results = stream::iter(filenames.into_iter().map(new_vslvfile_with_one))
-                .buffer_unordered(IO_OPS_LIMIT)
+                .bufferred(IO_OPS_LIMIT)
                 .collect::<Vec<_>>()
                 .await;
 
