@@ -903,6 +903,7 @@ pub mod mod_vlsv_reader {
             component: Option<i32>,
             cid: &[usize],
             hint: &mut [usize],
+            dir: &mut [i8],
         ) -> Option<Vec<&'a [u8]>>
         where
             T: bytemuck::AnyBitPattern,
@@ -933,12 +934,24 @@ pub mod mod_vlsv_reader {
                 .expect("CELLIDS misaligned or wrong length");
 
             let mut indices = Vec::with_capacity(cid.len());
+            let prev: Vec<_> = hint.iter().map(|x| *x).collect();
             for (i, &c) in cid.iter().enumerate() {
-                let idx = find_near_with_hint(cell_ids, c as u64, hint[i])
+                let idx = find_near_with_hint(cell_ids, c as u64, hint[i], dir[i])
                     .unwrap_or_else(|| panic!("Failed to find cellid {c}"));
                 indices.push(idx);
             }
+            for (i, d) in dir.iter_mut().enumerate() {
+                *d = if hint[i] > prev[i] { 1 } else { -1 };
+            }
+
+            let tmp = hint
+                .iter()
+                .zip(prev.iter())
+                .map(|(a, b)| if a > b { 1_i8 } else { -1_i8 })
+                .collect::<Vec<i8>>();
+
             hint.copy_from_slice(&indices);
+            dir.copy_from_slice(&tmp);
             let stride_bytes = info.datasize * info.vectorsize;
             let comp = component.unwrap_or(0) as usize;
             let mut retval = Vec::with_capacity(indices.len());
@@ -955,6 +968,7 @@ pub mod mod_vlsv_reader {
             component: Option<i32>,
             cid: &[usize; N],
             hint: &mut [usize; N],
+            dirs: &mut [i8; N],
         ) -> Option<[&'a [u8]; N]>
         where
             T: bytemuck::AnyBitPattern,
@@ -972,6 +986,7 @@ pub mod mod_vlsv_reader {
                 );
             }
 
+            let prev = hint.clone();
             let cellid_ds = self.get_dataset("CellID")?;
             let cell_id_bytes = &self.my_map()
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
@@ -979,12 +994,19 @@ pub mod mod_vlsv_reader {
                 .expect("CELLIDS misaligned or wrong length");
             let indices: [usize; N] = core::array::from_fn(|i| {
                 let target = cid[i] as u64;
-                let h = hint[i];
-                find_near_with_hint(cell_ids, target, h)
+                find_near_with_hint(cell_ids, target, hint[i], dirs[i])
                     .unwrap_or_else(|| panic!("Failed to find cellid {target}"))
             });
+            let tmp: [i8; N] = hint
+                .iter()
+                .zip(prev.iter())
+                .map(|(a, b)| if a > b { 1 } else { -1 })
+                .collect::<Vec<i8>>()
+                .try_into()
+                .unwrap();
 
             hint.copy_from_slice(&indices);
+            dirs.copy_from_slice(&tmp);
             let stride_bytes = info.datasize * info.vectorsize;
             let comp = component.unwrap_or(0) as usize;
             let out: [&'a [u8]; N] = core::array::from_fn(|i| {
@@ -998,37 +1020,45 @@ pub mod mod_vlsv_reader {
 
     //Galloping on top of cellids hints
     #[inline(always)]
-    fn find_near_with_hint(cell_ids: &[u64], target: u64, hint: usize) -> Option<usize> {
+    fn find_near_with_hint(cell_ids: &[u64], target: u64, hint: usize, dir: i8) -> Option<usize> {
         let n = cell_ids.len();
-        if n == 0 {
-            return None;
-        }
         let h = hint.min(n - 1);
         if cell_ids[h] == target {
             return Some(h);
         }
-
         let mut prev_w = 0usize;
         let mut w: usize = 128;
-
         loop {
             let left_prev = h.saturating_sub(prev_w);
             let right_prev = (h + prev_w).min(n - 1);
             let left_now = h.saturating_sub(w);
             let right_now = (h + w).min(n - 1);
-            let mut i = left_now;
-            while i < left_prev {
-                if cell_ids[i] == target {
-                    return Some(i);
+            if dir > 0 {
+                if let Some(idx) = &cell_ids[left_now..left_prev]
+                    .iter()
+                    .position(|x| *x == target)
+                {
+                    return Some(*idx);
                 }
-                i += 1;
-            }
-            let mut j = right_prev.saturating_add(1);
-            while j <= right_now {
-                if cell_ids[j] == target {
-                    return Some(j);
+                if let Some(idx) = &cell_ids[right_prev..right_now]
+                    .iter()
+                    .position(|x| *x == target)
+                {
+                    return Some(*idx);
                 }
-                j += 1;
+            } else {
+                if let Some(idx) = &cell_ids[right_prev..right_now]
+                    .iter()
+                    .position(|x| *x == target)
+                {
+                    return Some(*idx);
+                }
+                if let Some(idx) = &cell_ids[left_now..left_prev]
+                    .iter()
+                    .position(|x| *x == target)
+                {
+                    return Some(*idx);
+                }
             }
             if left_now == 0 && right_now == n - 1 {
                 break;
@@ -2995,10 +3025,11 @@ pub mod mod_vlsv_py_exports {
         let n_cids = cids.len();
         let fptrs = py.allow_threads(|| open_vlsv_files_fast(filenames));
         let mut hints = fptrs.first().unwrap().get_hints_for_cids(&cids);
+        let mut dirs: Vec<i8> = vec![0_i8; hints.len()];
         let mut flat = vec![0f32; n_cids * n_files];
         for (fi, f) in fptrs.iter().enumerate() {
             let refs = f
-                .read_vg_variable_at_as_ref_dyn::<f32>(var, op, &cids, &mut hints)
+                .read_vg_variable_at_as_ref_dyn::<f32>(var, op, &cids, &mut hints, &mut dirs)
                 .expect("PEBKAC");
             assert_eq!(refs.len(), n_cids);
 
@@ -3025,10 +3056,11 @@ pub mod mod_vlsv_py_exports {
         let n_cids = cids.len();
         let fptrs = py.allow_threads(|| open_vlsv_files_fast(filenames));
         let mut hints = fptrs.first().unwrap().get_hints_for_cids(&cids);
+        let mut dirs: Vec<i8> = vec![0_i8; hints.len()];
         let mut flat = vec![0f64; n_cids * n_files];
         for (fi, f) in fptrs.iter().enumerate() {
             let refs = f
-                .read_vg_variable_at_as_ref_dyn::<f64>(var, op, &cids, &mut hints)
+                .read_vg_variable_at_as_ref_dyn::<f64>(var, op, &cids, &mut hints, &mut dirs)
                 .expect("PEBKAC");
             assert_eq!(refs.len(), n_cids);
 
