@@ -496,6 +496,7 @@ pub mod mod_vlsv_reader {
                 meshes
                     .iter()
                     .find_map(|v| v.max_refinement_level.as_ref()?.parse::<u32>().ok())
+                    .or(Some(0))
             })
         }
 
@@ -1648,8 +1649,7 @@ pub mod mod_vlsv_reader {
                 "FSGRID" => Ok(VlasiatorGrid::FSGRID),
                 "SPATIALGRID" => Ok(VlasiatorGrid::SPATIALGRID),
                 "IONOSPHERE" => Ok(VlasiatorGrid::IONOSPHERE),
-                "PROTON" => Ok(VlasiatorGrid::VMESH),
-                other => panic!("Unknown VlasiatorGrid type: {other}"),
+                _ => Ok(VlasiatorGrid::VMESH),
             }
         }
     }
