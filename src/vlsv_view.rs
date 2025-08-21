@@ -103,7 +103,7 @@ fn main() {
     let f = VlsvFile::new(&file).unwrap();
     let mut needs_log_scaling = false;
     let mut data = f
-        .read_variable_zoom::<f32>(&var, Some(4), 4_f64)
+        .read_variable_zoom::<f32>(&var, Some(0), 1_f64)
         .or_else(|| {
             needs_log_scaling = true;
             f.read_vdf::<f32>(var.parse::<usize>().unwrap(), "proton")

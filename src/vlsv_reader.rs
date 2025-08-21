@@ -361,6 +361,20 @@ pub mod mod_vlsv_reader {
             Some(wid as usize)
         }
 
+        pub fn get_all_populations(&self) -> Option<Vec<&str>> {
+            Some(
+                self.root
+                    .mesh_node_crds_x
+                    .as_ref()?
+                    .iter()
+                    .filter_map(|v| {
+                        let grid: VlasiatorGrid = v.mesh.as_ref()?.as_str().parse().ok()?;
+                        (grid == VlasiatorGrid::VMESH).then(|| v.mesh.as_ref().unwrap().as_str())
+                    })
+                    .collect::<Vec<&str>>(),
+            )
+        }
+
         pub fn get_vspace_mesh_bbox(&self, pop: &str) -> Option<(usize, usize, usize)> {
             let nvx = self
                 .root

@@ -35,17 +35,22 @@ fn print_variables(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
     println!("WID: {:?}", wid);
     println!("Max AMR level: {:?}", f.get_max_amr_refinement().unwrap());
     println!("R-Geometry: {:?} cells", f.get_spatial_mesh_bbox().unwrap());
-    println!(
-        "V-Geometry: {:?} [blocks (WID={wid})]",
-        TryInto::<[usize; 3]>::try_into(f.get_vspace_mesh_bbox("proton").unwrap())
-            .unwrap()
-            .map(|x| x / wid)
-    );
     println!("R-Extents: {:?} [m]", f.get_spatial_mesh_extents().unwrap());
-    println!(
-        "V-Extents: {:?} [km/s]",
-        f.get_vspace_mesh_extents("proton").unwrap()
-    );
+    let pops = f.get_all_populations().unwrap();
+    pops.iter().for_each(|p| {
+        println!(
+            "V-Geometry [{}]: {:?} [blocks (WID={wid})]",
+            p,
+            TryInto::<[usize; 3]>::try_into(f.get_vspace_mesh_bbox(p).unwrap())
+                .unwrap()
+                .map(|x| x / wid)
+        );
+        println!(
+            "V-Extents [{}]: {:?} [km/s]",
+            p,
+            f.get_vspace_mesh_extents(p).unwrap()
+        );
+    });
     print!("Contains:\n[");
     for (name, _meta) in f.variables.iter().chain(f.parameters.iter()) {
         let ds = f.get_dataset(name).unwrap();
