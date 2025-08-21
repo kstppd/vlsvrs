@@ -34,25 +34,37 @@ fn print_variables(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
     let wid = f.get_wid().unwrap();
     println!("WID: {:?}", wid);
     println!("Max AMR level: {:?}", f.get_max_amr_refinement().unwrap());
-    println!("R-Geometry: {:?} cells", f.get_spatial_mesh_bbox().unwrap());
-    println!("R-Extents: {:?} [m]", f.get_spatial_mesh_extents().unwrap());
+    println!(
+        "Real Space Geometry: {:?} cells",
+        f.get_spatial_mesh_bbox().unwrap()
+    );
+    println!(
+        "Real Space Extents: {:?} [m]",
+        f.get_spatial_mesh_extents().unwrap()
+    );
     let pops = f.get_all_populations().unwrap();
+    println!("Populations: {:?} ", pops);
     pops.iter().for_each(|p| {
         println!(
-            "V-Geometry [{}]: {:?} [blocks (WID={wid})]",
-            p,
+            "\t {} Velocity Space Geometry: {:?} [blocks (WID={wid})]",
+            p.to_uppercase(),
             TryInto::<[usize; 3]>::try_into(f.get_vspace_mesh_bbox(p).unwrap())
                 .unwrap()
                 .map(|x| x / wid)
         );
         println!(
-            "V-Extents [{}]: {:?} [km/s]",
-            p,
+            "\t {} Velocity Space Extents: {:?} [km/s]",
+            p.to_uppercase(),
             f.get_vspace_mesh_extents(p).unwrap()
         );
     });
-    print!("Contains:\n[");
-    for (name, _meta) in f.variables.iter().chain(f.parameters.iter()) {
+    print!("Variables :\n[");
+    for (name, _meta) in f.variables.iter() {
+        print!("{}, ", name);
+    }
+    println!("]\n");
+    print!("Parameters :\n[");
+    for (name, _meta) in f.parameters.iter() {
         let ds = f.get_dataset(name).unwrap();
         if ds.arraysize < 3 && ds.vectorsize < 3 {
             print!("{}[{:.2?}], ", name, f.read_scalar_parameter(name).unwrap());
