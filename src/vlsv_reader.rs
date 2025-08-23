@@ -138,12 +138,31 @@ pub mod mod_vlsv_reader {
                 .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
                 .collect();
 
+            //Set all once cells here
+            let v = {
+                let a = OnceCell::new();
+                let _ = a.set(vars);
+                a
+            };
+
+            let p = {
+                let a = OnceCell::new();
+                let _ = a.set(params);
+                a
+            };
+
+            let r = {
+                let a = OnceCell::new();
+                let _ = a.set(root);
+                a
+            };
+
             Ok(Self {
                 filename: filename.to_string(),
-                variables: vars,
-                parameters: params,
+                variables: v,
+                parameters: p,
                 memmap: OnceCell::new(),
-                root,
+                root: r,
             })
         }
 
@@ -2708,15 +2727,19 @@ pub mod mod_vlsv_py_exports {
         }
 
         fn list_variables(&self) -> Vec<String> {
-            self.inner.variables.keys().cloned().collect()
+            self.inner.variables().keys().cloned().collect()
         }
 
         fn read_scalar_parameter(&self, name: &str) -> Option<f64> {
             self.inner.read_scalar_parameter(name)
         }
 
-        fn get_wid(&self) -> Option<usize> {
-            self.inner.get_wid()
+        fn get_wid(&self, pop: &str) -> Option<usize> {
+            self.inner.get_wid(pop)
+        }
+
+        fn get_global_wid(&self) -> Option<usize> {
+            self.inner.get_global_wid()
         }
 
         fn get_spatial_mesh_bbox(&self) -> Option<(usize, usize, usize)> {
