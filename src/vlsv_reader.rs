@@ -51,7 +51,7 @@ pub mod mod_vlsv_reader {
     pub const VLSV_FOOTER_LOC_END: usize = 16;
     use bytemuck::{Pod, cast_slice};
     use core::convert::TryInto;
-    use memmap2::{Mmap, MmapOptions};
+    use memmap2::Mmap;
     use ndarray::{Array4, ArrayView1};
     use ndarray::{Axis, Order, s};
     use num_traits::{Num, NumCast, Zero};
@@ -64,54 +64,20 @@ pub mod mod_vlsv_reader {
     #[derive(Debug)]
     pub struct VlsvFile {
         pub filename: String,
-        pub variables: HashMap<String, Variable>,
-        pub parameters: HashMap<String, Variable>,
+        pub variables: OnceCell<HashMap<String, Variable>>,
+        pub parameters: OnceCell<HashMap<String, Variable>>,
         memmap: OnceCell<Mmap>,
-        pub root: VlsvRoot,
+        pub root: OnceCell<VlsvRoot>,
     }
 
     impl VlsvFile {
         pub fn new(filename: &str) -> Result<Self, Box<dyn std::error::Error>> {
-            let file = std::fs::File::open(filename)?;
-            let mmap = unsafe { MmapOptions::new().map(&file)? };
-            let footer_offset: usize =
-                usize::from_ne_bytes(mmap[VLSV_FOOTER_LOC_START..VLSV_FOOTER_LOC_END].try_into()?);
-            let xml_str = std::str::from_utf8(&mmap[footer_offset..])?;
-            let root: VlsvRoot = serde_xml_rs::from_str(xml_str)?;
-
-            let vars: HashMap<String, Variable> = root
-                .variables
-                .iter()
-                .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
-                .chain(
-                    [
-                        ("CONFIG", "config_file"),
-                        ("VERSION", "version_information"),
-                    ]
-                    .into_iter()
-                    .filter_map(|(tag, section)| {
-                        read_tag(xml_str, tag, None, Some(section))
-                            .map(|x| (x.name.clone().unwrap(), x))
-                    }),
-                )
-                .collect();
-
-            let params: HashMap<String, Variable> = root
-                .parameters
-                .iter()
-                .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
-                .collect();
-
             Ok(Self {
                 filename: filename.to_string(),
-                variables: vars,
-                parameters: params,
-                memmap: {
-                    let cell = OnceCell::new();
-                    let _ = cell.set(mmap);
-                    cell
-                },
-                root,
+                variables: OnceCell::new(),
+                parameters: OnceCell::new(),
+                memmap: OnceCell::new(),
+                root: OnceCell::new(),
             })
         }
 
@@ -181,8 +147,8 @@ pub mod mod_vlsv_reader {
             })
         }
 
-        #[inline(always)]
-        fn my_map(&self) -> &memmap2::Mmap {
+        #[inline]
+        fn memorymap(&self) -> &memmap2::Mmap {
             self.memmap.get_or_init(|| {
                 let file = std::fs::File::open(&self.filename)
                     .unwrap_or_else(|e| panic!("ERROR:mmap open('{}') failed: {e}", self.filename));
@@ -194,16 +160,68 @@ pub mod mod_vlsv_reader {
             })
         }
 
+        #[inline]
+        fn root(&self) -> &VlsvRoot {
+            self.root.get_or_init(|| {
+                let footer_offset: usize = usize::from_ne_bytes(
+                    self.memorymap()[VLSV_FOOTER_LOC_START..VLSV_FOOTER_LOC_END]
+                        .try_into()
+                        .unwrap(),
+                );
+                let xml_str = std::str::from_utf8(&self.memorymap()[footer_offset..]).unwrap();
+                serde_xml_rs::from_str(xml_str).unwrap()
+            })
+        }
+
+        #[inline]
+        pub fn variables(&self) -> &HashMap<String, Variable> {
+            self.variables.get_or_init(|| {
+                let footer_offset: usize = usize::from_ne_bytes(
+                    self.memorymap()[VLSV_FOOTER_LOC_START..VLSV_FOOTER_LOC_END]
+                        .try_into()
+                        .unwrap(),
+                );
+                let xml_str = std::str::from_utf8(&self.memorymap()[footer_offset..]).unwrap();
+                self.root()
+                    .variables
+                    .iter()
+                    .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
+                    .chain(
+                        [
+                            ("CONFIG", "config_file", "Config not available!"),
+                            ("VERSION", "version_information", "Version not available!"),
+                        ]
+                        .into_iter()
+                        .filter_map(|(tag, section, _warn_msg)| {
+                            read_tag(xml_str, tag, None, Some(section))
+                                .map(|x| (x.name.clone().unwrap(), x))
+                        }),
+                    )
+                    .collect()
+            })
+        }
+
+        #[inline]
+        pub fn parameters(&self) -> &HashMap<String, Variable> {
+            self.parameters.get_or_init(|| {
+                self.root()
+                    .parameters
+                    .iter()
+                    .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
+                    .collect()
+            })
+        }
+
         pub fn read_scalar_parameter(&self, name: &str) -> Option<f64> {
             let info = self.get_dataset(name)?;
-            assert!(info.vectorsize == 1);
-            assert!(info.arraysize == 1);
+            debug_assert!(info.vectorsize == 1);
+            debug_assert!(info.arraysize == 1);
             let expected_bytes = info.datasize * info.vectorsize;
-            assert!(
-                info.offset + expected_bytes <= self.my_map().len(),
+            debug_assert!(
+                info.offset + expected_bytes <= self.memorymap().len(),
                 "Attempt to read out-of-bounds from memory map"
             );
-            let src_bytes = &self.my_map()[info.offset..info.offset + expected_bytes];
+            let src_bytes = &self.memorymap()[info.offset..info.offset + expected_bytes];
             let retval = match info.datasize {
                 8 => {
                     let mut buffer: [u8; 8] = [0; 8];
@@ -235,11 +253,11 @@ pub mod mod_vlsv_reader {
             const NAME: &str = "config_file";
             let info = self.get_dataset(NAME)?;
             let expected_bytes = info.datasize * info.vectorsize * info.arraysize;
-            assert!(
-                info.offset + expected_bytes <= self.my_map().len(),
+            debug_assert!(
+                info.offset + expected_bytes <= self.memorymap().len(),
                 "Attempt to read out-of-bounds from memory map"
             );
-            let bytes = &self.my_map()[info.offset..info.offset + expected_bytes];
+            let bytes = &self.memorymap()[info.offset..info.offset + expected_bytes];
             let cfgfile = std::str::from_utf8(bytes).map(|s| s.to_owned()).ok()?;
             Some(cfgfile)
         }
@@ -248,11 +266,11 @@ pub mod mod_vlsv_reader {
             const NAME: &str = "version_information";
             let info = self.get_dataset(NAME)?;
             let expected_bytes = info.datasize * info.vectorsize * info.arraysize;
-            assert!(
-                info.offset + expected_bytes <= self.my_map().len(),
+            debug_assert!(
+                info.offset + expected_bytes <= self.memorymap().len(),
                 "Attempt to read out-of-bounds from memory map"
             );
-            let bytes = &self.my_map()[info.offset..info.offset + expected_bytes];
+            let bytes = &self.memorymap()[info.offset..info.offset + expected_bytes];
             let version = std::str::from_utf8(bytes).map(|s| s.to_owned()).ok()?;
             Some(version)
         }
@@ -278,7 +296,7 @@ pub mod mod_vlsv_reader {
             };
             let expected_bytes = info.datasize * info.arraysize * info.vectorsize;
             let end = info.offset + expected_bytes;
-            let src_bytes = &self.my_map()[info.offset..end];
+            let src_bytes = &self.memorymap()[info.offset..end];
             let dst_bytes = bytemuck::cast_slice_mut::<T, u8>(dst);
 
             /*
@@ -351,11 +369,32 @@ pub mod mod_vlsv_reader {
             );
         }
 
-        // #[deprecated(note = "TODO: This reads WID from the first population file. Reconsider!")]
-        pub fn get_wid(&self) -> Option<usize> {
+        // #[deprecated(note = "TODO: This reads WID from the first population file. Use get_wid(pop:&str)!")]
+        pub fn get_global_wid(&self) -> Option<usize> {
             let wid = {
-                let dataset: VlsvDataset =
-                    self.root.blockvariable.as_ref()?.first()?.try_into().ok()?;
+                let dataset: VlsvDataset = self
+                    .root()
+                    .blockvariable
+                    .as_ref()?
+                    .first()?
+                    .try_into()
+                    .ok()?;
+                (dataset.vectorsize as f64).cbrt()
+            };
+            Some(wid as usize)
+        }
+
+        pub fn get_wid(&self, pop: &str) -> Option<usize> {
+            let wid = {
+                let dataset: VlsvDataset = self
+                    .root()
+                    .blockvariable
+                    .as_ref()?
+                    .iter()
+                    .find(|s| s.name.as_ref().unwrap() == pop)
+                    .expect("Population {pop} not found in file!")
+                    .try_into()
+                    .ok()?;
                 (dataset.vectorsize as f64).cbrt()
             };
             Some(wid as usize)
@@ -363,7 +402,7 @@ pub mod mod_vlsv_reader {
 
         pub fn get_all_populations(&self) -> Option<Vec<&str>> {
             Some(
-                self.root
+                self.root()
                     .mesh_node_crds_x
                     .as_ref()?
                     .iter()
@@ -377,7 +416,7 @@ pub mod mod_vlsv_reader {
 
         pub fn get_vspace_mesh_bbox(&self, pop: &str) -> Option<(usize, usize, usize)> {
             let nvx = self
-                .root
+                .root()
                 .mesh_node_crds_x
                 .as_ref()
                 .and_then(|meshes| meshes.iter().find(|v| v.mesh.as_deref() == Some(pop)))
@@ -388,7 +427,7 @@ pub mod mod_vlsv_reader {
                     None
                 })?;
             let nvy = self
-                .root
+                .root()
                 .mesh_node_crds_y
                 .as_ref()
                 .and_then(|meshes| meshes.iter().find(|v| v.mesh.as_deref() == Some(pop)))
@@ -399,7 +438,7 @@ pub mod mod_vlsv_reader {
                     None
                 })?;
             let nvz = self
-                .root
+                .root()
                 .mesh_node_crds_z
                 .as_ref()
                 .and_then(|meshes| meshes.iter().find(|v| v.mesh.as_deref() == Some(pop)))
@@ -414,7 +453,7 @@ pub mod mod_vlsv_reader {
 
         pub fn get_spatial_mesh_extents(&self) -> Option<(f64, f64, f64, f64, f64, f64)> {
             let nodes_x = TryInto::<VlsvDataset>::try_into(
-                self.root.mesh_node_crds_x.as_ref().and_then(|meshes| {
+                self.root().mesh_node_crds_x.as_ref().and_then(|meshes| {
                     meshes
                         .iter()
                         .find(|v| v.mesh.as_deref() == Some("SpatialGrid"))
@@ -422,7 +461,7 @@ pub mod mod_vlsv_reader {
             )
             .ok()?;
             let nodes_y = TryInto::<VlsvDataset>::try_into(
-                self.root.mesh_node_crds_y.as_ref().and_then(|meshes| {
+                self.root().mesh_node_crds_y.as_ref().and_then(|meshes| {
                     meshes
                         .iter()
                         .find(|v| v.mesh.as_deref() == Some("SpatialGrid"))
@@ -430,14 +469,14 @@ pub mod mod_vlsv_reader {
             )
             .ok()?;
             let nodes_z = TryInto::<VlsvDataset>::try_into(
-                self.root.mesh_node_crds_z.as_ref().and_then(|meshes| {
+                self.root().mesh_node_crds_z.as_ref().and_then(|meshes| {
                     meshes
                         .iter()
                         .find(|v| v.mesh.as_deref() == Some("SpatialGrid"))
                 })?,
             )
             .ok()?;
-            assert!(nodes_x.datasize == 8, "Expected f64 for mesh node coords");
+            debug_assert!(nodes_x.datasize == 8, "Expected f64 for mesh node coords");
             let mut datax: Vec<f64> = vec![0_f64; nodes_x.arraysize];
             let mut datay: Vec<f64> = vec![0_f64; nodes_y.arraysize];
             let mut dataz: Vec<f64> = vec![0_f64; nodes_z.arraysize];
@@ -455,27 +494,27 @@ pub mod mod_vlsv_reader {
         }
         pub fn get_vspace_mesh_extents(&self, pop: &str) -> Option<(f64, f64, f64, f64, f64, f64)> {
             let nodes_x = TryInto::<VlsvDataset>::try_into(
-                self.root
+                self.root()
                     .mesh_node_crds_x
                     .as_ref()
                     .and_then(|meshes| meshes.iter().find(|v| v.mesh.as_deref() == Some(pop)))?,
             )
             .ok()?;
             let nodes_y = TryInto::<VlsvDataset>::try_into(
-                self.root
+                self.root()
                     .mesh_node_crds_y
                     .as_ref()
                     .and_then(|meshes| meshes.iter().find(|v| v.mesh.as_deref() == Some(pop)))?,
             )
             .ok()?;
             let nodes_z = TryInto::<VlsvDataset>::try_into(
-                self.root
+                self.root()
                     .mesh_node_crds_z
                     .as_ref()
                     .and_then(|meshes| meshes.iter().find(|v| v.mesh.as_deref() == Some(pop)))?,
             )
             .ok()?;
-            assert!(nodes_x.datasize == 8, "Expected f64 for mesh node coords");
+            debug_assert!(nodes_x.datasize == 8, "Expected f64 for mesh node coords");
             let mut datax: Vec<f64> = vec![0_f64; nodes_x.arraysize];
             let mut datay: Vec<f64> = vec![0_f64; nodes_y.arraysize];
             let mut dataz: Vec<f64> = vec![0_f64; nodes_z.arraysize];
@@ -495,7 +534,7 @@ pub mod mod_vlsv_reader {
         pub fn get_domain_decomposition(&self) -> Option<[usize; 3]> {
             let mut decomp: [i32; 3] = [0; 3];
             let decomposition: VlsvDataset = self
-                .root
+                .root()
                 .mesh_decomposition
                 .as_ref()
                 .and_then(|v| v.first())
@@ -506,7 +545,7 @@ pub mod mod_vlsv_reader {
         }
 
         pub fn get_max_amr_refinement(&self) -> Option<u32> {
-            self.root.mesh.as_ref().and_then(|meshes| {
+            self.root().mesh.as_ref().and_then(|meshes| {
                 meshes
                     .iter()
                     .find_map(|v| v.max_refinement_level.as_ref()?.parse::<u32>().ok())
@@ -530,9 +569,9 @@ pub mod mod_vlsv_reader {
         }
 
         pub fn get_dataset(&self, name: &str) -> Option<VlsvDataset> {
-            self.variables
+            self.variables()
                 .get(name)
-                .or_else(|| self.parameters.get(name))
+                .or_else(|| self.parameters().get(name))
                 .or_else(|| {
                     eprintln!("'{name}' not found in VARIABLES or PARAMETERS");
                     None
@@ -667,7 +706,7 @@ pub mod mod_vlsv_reader {
             T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
         {
             let blockspercell = TryInto::<VlsvDataset>::try_into(
-                self.root
+                self.root()
                     .blockspercell
                     .as_ref()?
                     .iter()
@@ -676,7 +715,7 @@ pub mod mod_vlsv_reader {
             .ok()?;
 
             let cellswithblocks = TryInto::<VlsvDataset>::try_into(
-                self.root
+                self.root()
                     .cellswithblocks
                     .as_ref()?
                     .iter()
@@ -685,7 +724,7 @@ pub mod mod_vlsv_reader {
             .ok()?;
 
             let blockids = TryInto::<VlsvDataset>::try_into(
-                self.root
+                self.root()
                     .blockids
                     .as_ref()?
                     .iter()
@@ -694,7 +733,7 @@ pub mod mod_vlsv_reader {
             .ok()?;
 
             let blockvariable = TryInto::<VlsvDataset>::try_into(
-                self.root
+                self.root()
                     .blockvariable
                     .as_ref()?
                     .iter()
@@ -702,7 +741,7 @@ pub mod mod_vlsv_reader {
             )
             .ok()?;
 
-            let wid = self.get_wid()?;
+            let wid = self.get_wid(pop)?;
             let wid3 = wid.pow(3);
             let (nvx, nvy, nvz) = self.get_vspace_mesh_bbox(pop)?;
             let (mx, my, mz) = (nvx / wid, nvy / wid, nvz / wid);
@@ -737,7 +776,7 @@ pub mod mod_vlsv_reader {
 
             let id2ijk = |id: usize| -> (usize, usize, usize) {
                 let plane = mx * my;
-                assert!(id < plane * mz, "GID out of bounds");
+                debug_assert!(id < plane * mz, "GID out of bounds");
                 let k = id / plane;
                 let rem = id % plane;
                 let j = rem / mx;
@@ -883,7 +922,7 @@ pub mod mod_vlsv_reader {
 
         pub fn get_hints_for_cids_const<const N: usize>(&self, cids: &[usize; N]) -> [usize; N] {
             let cellid_ds = self.get_dataset("CellID").expect("CellIDs not found!");
-            let cell_id_bytes = &self.my_map()
+            let cell_id_bytes = &self.memorymap()
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
             let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
                 .expect("CELLIDS misaligned or wrong length");
@@ -898,7 +937,7 @@ pub mod mod_vlsv_reader {
 
         pub fn get_hints_for_cids(&self, cids: &[usize]) -> Vec<usize> {
             let cellid_ds = self.get_dataset("CellID").expect("CellIDs not found!");
-            let cell_id_bytes = &self.my_map()
+            let cell_id_bytes = &self.memorymap()
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
             let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
                 .expect("CELLIDS misaligned or wrong length");
@@ -942,7 +981,7 @@ pub mod mod_vlsv_reader {
             }
 
             let cellid_ds = self.get_dataset("CellID")?;
-            let cell_id_bytes = &self.my_map()
+            let cell_id_bytes = &self.memorymap()
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
             let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
                 .expect("CELLIDS misaligned or wrong length");
@@ -959,7 +998,7 @@ pub mod mod_vlsv_reader {
             let mut retval = Vec::with_capacity(indices.len());
             for idx in indices {
                 let off = info.offset + idx * stride_bytes + comp * info.datasize;
-                retval.push(&self.my_map()[off..off + info.datasize]);
+                retval.push(&self.memorymap()[off..off + info.datasize]);
             }
             Some(retval)
         }
@@ -988,7 +1027,7 @@ pub mod mod_vlsv_reader {
             }
 
             let cellid_ds = self.get_dataset("CellID")?;
-            let cell_id_bytes = &self.my_map()
+            let cell_id_bytes = &self.memorymap()
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
             let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
                 .expect("CELLIDS misaligned or wrong length");
@@ -1005,7 +1044,7 @@ pub mod mod_vlsv_reader {
             let out: [&'a [u8]; N] = core::array::from_fn(|i| {
                 let idx = indices[i];
                 let off = info.offset + idx * stride_bytes + comp * info.datasize;
-                &self.my_map()[off..off + info.datasize]
+                &self.memorymap()[off..off + info.datasize]
             });
             Some(out)
         }
@@ -1276,7 +1315,7 @@ pub mod mod_vlsv_reader {
 
         let (sx, sy, sz, sc) = src.dim();
         let (tx, ty, tz, tc) = dst.dim();
-        assert!(sc == tc, "ERROR: different vectorsizes found");
+        debug_assert!(sc == tc, "ERROR: different vectorsizes found");
 
         let (sxmin, symin, szmin, sxmax, symax, szmax) = src_extent;
         let (txmin, tymin, tzmin, txmax, tymax, tzmax) = dst_extent;
@@ -1333,7 +1372,7 @@ pub mod mod_vlsv_reader {
         }
         let (sx, sy, sz, sc) = src.dim();
         let (tx, ty, tz, tc) = dst.dim();
-        assert!(sc == tc, "ERROR: different vectorsizes found");
+        debug_assert!(sc == tc, "ERROR: different vectorsizes found");
 
         let (sxmin, symin, szmin, sxmax, symax, szmax) = src_extent;
         let (txmin, tymin, tzmin, txmax, tymax, tzmax) = dst_extent;
@@ -2568,7 +2607,7 @@ pub mod mod_vlsv_c_exports {
         cid: usize,
         target: *mut Grid<f32>,
     ) {
-        assert!(!target.is_null(), "target Grid is NULL");
+        debug_assert!(!target.is_null(), "target Grid is NULL");
         let target: &mut Grid<f32> = unsafe { &mut *target };
         let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
         let pop = unsafe { CStr::from_ptr(pop).to_str().unwrap() };
@@ -2597,7 +2636,7 @@ pub mod mod_vlsv_c_exports {
         cid: usize,
         target: *mut Grid<f64>,
     ) {
-        assert!(!target.is_null(), "target Grid is NULL");
+        debug_assert!(!target.is_null(), "target Grid is NULL");
         let target: &mut Grid<f64> = unsafe { &mut *target };
         let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
         let pop = unsafe { CStr::from_ptr(pop).to_str().unwrap() };
@@ -2793,7 +2832,7 @@ pub mod mod_vlsv_py_exports {
             pop: &str,
             scale_factor: f64,
         ) -> PyResult<Py<PyArray4<f32>>> {
-            assert!(scale_factor > 0.0, "scale_factor must be > 0");
+            debug_assert!(scale_factor > 0.0, "scale_factor must be > 0");
 
             let new_extents = self.inner.get_vspace_mesh_extents(pop).unwrap();
 
@@ -2818,7 +2857,7 @@ pub mod mod_vlsv_py_exports {
             pop: &str,
             scale_factor: f64,
         ) -> PyResult<Py<PyArray4<f64>>> {
-            assert!(scale_factor > 0.0, "scale_factor must be > 0");
+            debug_assert!(scale_factor > 0.0, "scale_factor must be > 0");
 
             let new_extents = self.inner.get_vspace_mesh_extents(pop).unwrap();
 
@@ -2851,7 +2890,7 @@ pub mod mod_vlsv_py_exports {
             vymax: f64,
             vzmax: f64,
         ) -> PyResult<Py<PyArray4<f32>>> {
-            // assert!(!target.is_null(), "target Grid is NULL");
+            // debug_assert!(!target.is_null(), "target Grid is NULL");
             // let target: &mut Grid<f32> = unsafe { &mut *target };
             let mut vdf: Array4<f32> = Array4::<f32>::zeros((nx, ny, nz, 1));
             let new_extents = (vxmin, vymin, vzmin, vxmax, vymax, vzmax);

@@ -31,9 +31,6 @@ struct Args {
 }
 
 fn print_variables(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
-    let wid = f.get_wid().unwrap();
-    println!("WID: {:?}", wid);
-    println!("Max AMR level: {:?}", f.get_max_amr_refinement().unwrap());
     println!(
         "Real Space Geometry: {:?} cells",
         f.get_spatial_mesh_bbox().unwrap()
@@ -42,9 +39,12 @@ fn print_variables(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
         "Real Space Extents: {:?} [m]",
         f.get_spatial_mesh_extents().unwrap()
     );
+    println!("Max AMR level: {:?}", f.get_max_amr_refinement().unwrap());
     let pops = f.get_all_populations().unwrap();
     println!("Populations: {:?} ", pops);
     pops.iter().for_each(|p| {
+        let wid = f.get_wid(p).unwrap();
+        println!("\t {} WID: {:?}", p.to_uppercase(), wid);
         println!(
             "\t {} Velocity Space Geometry: {:?} [blocks (WID={wid})]",
             p.to_uppercase(),
@@ -59,12 +59,12 @@ fn print_variables(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
         );
     });
     print!("Variables :\n[");
-    for (name, _meta) in f.variables.iter() {
+    for (name, _meta) in f.variables().iter() {
         print!("{}, ", name);
     }
     println!("]\n");
     print!("Parameters :\n[");
-    for (name, _meta) in f.parameters.iter() {
+    for (name, _meta) in f.parameters().iter() {
         let ds = f.get_dataset(name).unwrap();
         if ds.arraysize < 3 && ds.vectorsize < 3 {
             print!("{}[{:.2?}], ", name, f.read_scalar_parameter(name).unwrap());
