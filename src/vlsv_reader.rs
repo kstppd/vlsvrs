@@ -85,11 +85,11 @@ pub mod mod_vlsv_reader {
                 .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
                 .chain(
                     [
-                        ("CONFIG", "config_file", "Config not available!"),
-                        ("VERSION", "version_information", "Version not available!"),
+                        ("CONFIG", "config_file"),
+                        ("VERSION", "version_information"),
                     ]
                     .into_iter()
-                    .filter_map(|(tag, section, _warn_msg)| {
+                    .filter_map(|(tag, section)| {
                         read_tag(xml_str, tag, None, Some(section))
                             .map(|x| (x.name.clone().unwrap(), x))
                     }),
@@ -155,11 +155,11 @@ pub mod mod_vlsv_reader {
                 .filter_map(|var| var.name.clone().map(|n| (n, var.clone())))
                 .chain(
                     [
-                        ("CONFIG", "config_file", "Config not available!"),
-                        ("VERSION", "version_information", "Version not available!"),
+                        ("CONFIG", "config_file"),
+                        ("VERSION", "version_information"),
                     ]
                     .into_iter()
-                    .filter_map(|(tag, section, _)| {
+                    .filter_map(|(tag, section)| {
                         read_tag(xml_str, tag, None, Some(section))
                             .map(|x| (x.name.clone().unwrap(), x))
                     }),
