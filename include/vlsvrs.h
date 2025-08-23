@@ -1,5 +1,6 @@
 #pragma once
 #include "stddef.h"
+
 /*
 WARNING
 The ownership of the pointers returned is passed to the c callsite
@@ -18,7 +19,7 @@ typedef struct {
   double ymax;
   double zmax;
   float *data;
-}Grid32;
+} VLSVRS_Grid32;
 
 typedef struct {
   size_t nx;
@@ -31,15 +32,21 @@ typedef struct {
   double xmax;
   double ymax;
   double zmax;
-  float *data;
-}Grid64;
+  double *data;
+} VLSVRS_Grid64;
 
-Grid32 read_var_32(const char *fname, const char *varname, int op);
-Grid64 read_var_64(const char *fname, const char *varname, int op);
-Grid32 read_vdf_32(const char *fname, const char *pop, size_t cid);
-Grid64 read_vdf_64(const char *fname, const char *pop, size_t cid);
+VLSVRS_Grid32 read_var_32(const char *fname, const char *varname, int op);
+VLSVRS_Grid64 read_var_64(const char *fname, const char *varname, int op);
+VLSVRS_Grid32 read_vdf_32(const char *fname, const char *pop, size_t cid);
+VLSVRS_Grid64 read_vdf_64(const char *fname, const char *pop, size_t cid);
 void read_vdf_into_32(const char *fname, const char *pop, size_t cid,
-                      Grid32 *target);
+                      VLSVRS_Grid32 *target);
 void read_vdf_into_64(const char *fname, const char *pop, size_t cid,
-                      Grid64 *target);
+                      VLSVRS_Grid64 *target);
 double read_scalar_parameter(const char *fname, const char *parameter);
+size_t get_wid(const char *pop);
+
+#ifdef VLSVRS_STRIP_PREFIX
+#define VLSVRS_Grid32 Grid32
+#define VLSVRS_Grid64 Grid64
+#endif

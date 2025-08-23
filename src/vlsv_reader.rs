@@ -2511,6 +2511,14 @@ pub mod mod_vlsv_c_exports {
     }
 
     /************************* C Bindings *********************************/
+    #[unsafe(export_name = "get_wid")]
+    pub unsafe fn get_wid(filename: *const c_char, popname: *const c_char) -> usize {
+        let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
+        let pop = unsafe { CStr::from_ptr(popname).to_str().unwrap() };
+        let f = VlsvFile::new(name).unwrap();
+        return f.get_wid(pop).expect("ERROR: could not get WID for {name}");
+    }
+
     #[unsafe(export_name = "read_var_32")]
     pub unsafe fn read_var_32(
         filename: *const c_char,
