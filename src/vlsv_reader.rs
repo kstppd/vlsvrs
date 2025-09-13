@@ -2609,6 +2609,7 @@ pub mod mod_vlsv_tracing {
         pub vpar: T,
         pub mu: T,
         pub alive: bool,
+        pub dt: T,
     }
 
     #[derive(Debug, Clone)]

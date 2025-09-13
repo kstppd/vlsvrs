@@ -24,7 +24,7 @@ pub fn push_gc_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
             pop_ref.particles[i].clone()
         };
 
-        let mut dt = T::from(1e-2).unwrap();
+        let mut dt = gc.dt;
         gc_adaptive(
             &mut gc,
             f,
@@ -34,6 +34,7 @@ pub fn push_gc_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
             mass,
             charge,
         );
+        gc.dt = dt;
         let mut pop_ref = pr.lock().unwrap();
         pop_ref.particles[i] = gc;
     });
@@ -68,6 +69,7 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
             vpar,
             mu,
             alive: true,
+            dt: 1e-2,
         });
     }
     let mut pop = Arc::new(Mutex::new(pop));
