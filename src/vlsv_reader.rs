@@ -2086,22 +2086,53 @@ pub mod mod_vlsv_tracing {
 
     impl<T: PtrTrait> VlsvDynamicField<T> {
         pub fn new(dir: &str) -> Self {
+            use indicatif::{ProgressBar, ProgressStyle};
+            use rayon::prelude::*;
             use std::fs;
-            let mut timeline = Vec::new();
-            let mut ds: T = T::zero();
-            for entry in fs::read_dir(dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.extension().map(|e| e == "vlsv").unwrap_or(false) {
-                    let filename = path.to_string_lossy().to_string();
-                    println!("Loading {}...", filename);
+            let mut files: Vec<String> = fs::read_dir(dir)
+                .unwrap()
+                .filter_map(|entry| {
+                    let path = entry.unwrap().path();
+                    if path.extension().map(|e| e == "vlsv").unwrap_or(false) {
+                        Some(path.to_string_lossy().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            files.sort();
+
+            let num_files = files.len();
+            let num_threads = rayon::current_num_threads();
+            println!("Loading {num_files} VLSV files using {num_threads} threads...");
+
+            let pb = ProgressBar::new(num_files as u64);
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+                )
+                .unwrap()
+                .progress_chars("##-"),
+            );
+
+            let mut timeline: Vec<(T, VlsvStaticField<T>)> = files
+                .par_iter()
+                .map(|filename| {
                     let f = VlsvFile::new(&filename).unwrap();
                     let t: T = T::from(f.read_scalar_parameter("time").unwrap()).unwrap();
-                    let fields = VlsvStaticField::new(&filename);
-                    ds = fields.ds();
-                    timeline.push((t, fields));
-                }
-            }
+                    let fields = VlsvStaticField::new(filename);
+                    pb.inc(1);
+                    (t, fields)
+                })
+                .collect();
+
+            pb.finish_with_message("All files loaded.");
             timeline.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            let ds = if let Some(first) = timeline.first() {
+                first.1.ds()
+            } else {
+                T::zero()
+            };
             Self { timeline, ds }
         }
     }

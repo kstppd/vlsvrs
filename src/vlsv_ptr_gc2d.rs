@@ -37,14 +37,13 @@ pub fn push_gc_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
         let mut pop_ref = pr.lock().unwrap();
         pop_ref.particles[i] = gc;
     });
-
     *actual_time = *actual_time + time_span;
 }
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
-    let dir = String::from("/home/user/vlsv_output/");
-    let fields = VlsvStaticField::<f64>::new(&String::from("bulk.0000601.vlsv"));
-    // let fields = DipoleField::<f64>::new(physical_constants::f64::DIPOLE_MOMENT);
+    let fields = VlsvDynamicField::<f64>::new(&String::from(
+        "/wrk-vakka/group/spacephysics/vlasiator/2D/AID/bulk/",
+    ));
     let mass = physical_constants::f64::PROTON_MASS;
     let charge = physical_constants::f64::PROTON_CHARGE;
     let energy_kev = 112.0;
@@ -71,9 +70,7 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
             alive: true,
         });
     }
-
     let mut pop = Arc::new(Mutex::new(pop));
-
     let mut actual_time: f64 = 0.0;
     for out in 0..500 {
         push_gc_population_cpu_adpt(&mut pop, &fields, 5.0, &mut actual_time);
