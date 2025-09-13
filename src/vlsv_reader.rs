@@ -2713,9 +2713,19 @@ pub mod mod_vlsv_tracing {
         charge: T,
         mass: T,
     ) -> GuidingCenter2D<T> {
-        let fields = f.get_fields_at(t, gc.x, gc.y, T::zero()).unwrap();
-        let b = [fields[0], fields[1], fields[2]];
-        let e = [fields[3], fields[4], fields[5]];
+        let fields_opt = f.get_fields_at(t, gc.x, gc.y, T::zero());
+        let (b, e) = match fields_opt {
+            Some(fields) => {
+                let b = [fields[0], fields[1], fields[2]];
+                let e = [fields[3], fields[4], fields[5]];
+                (b, e)
+            }
+            None => {
+                let mut dead = gc.clone();
+                dead.alive = false;
+                return dead;
+            }
+        };
         let bmag = mag(b[0], b[1], b[2]);
         if bmag <= T::epsilon() {
             let mut dead = gc.clone();
@@ -2854,7 +2864,15 @@ pub mod mod_vlsv_tracing {
             let error = if ex > ey { ex } else { ey };
 
             // tolerance
-            let v_fields = f.get_fields_at(t, gc.x, gc.y, T::zero()).unwrap();
+            let v_fields_opt = f.get_fields_at(t, gc.x, gc.y, T::zero());
+            let v_fields = match v_fields_opt {
+                Some(v) => v,
+                None => {
+                    let mut dead = gc.clone();
+                    dead.alive = false;
+                    return;
+                }
+            };
             let b = [v_fields[0], v_fields[1], v_fields[2]];
             let e = [v_fields[3], v_fields[4], v_fields[5]];
             let bmag = mag(b[0], b[1], b[2]);

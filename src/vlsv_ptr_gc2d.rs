@@ -68,13 +68,15 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
                 .map(|s| s.trim().parse::<f64>().expect("Nan ???"))
                 .collect();
 
-            if sub.len() != 6 {
+            if sub.len() != 7 {
                 panic!("Wrong format: {}", line);
             }
             let (time, x, y, z, vx, vy, vz) =
                 (sub[0], sub[1], sub[2], sub[3], sub[4], sub[5], sub[6]);
             actual_time = time;
-            let fields_here = fields.get_fields_at(actual_time, x, y, z).unwrap();
+            let fields_here = fields
+                .get_fields_at(actual_time, x, y, z)
+                .unwrap_or([0.0, 0.0, 30e-9, 0.0, 0.0, 0.0]);
             let bmag = mag(fields_here[0], fields_here[1], fields_here[2]);
             let vperp2 = vx * vx + vy * vy;
             let mu = 0.5 * mass * vperp2 / bmag;
