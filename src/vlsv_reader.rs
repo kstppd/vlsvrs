@@ -1832,6 +1832,7 @@ pub mod mod_vlsv_reader {
 pub mod mod_vlsv_tracing {
     use bytemuck::Pod;
     use ndarray::Array4;
+    use ndarray::ArrayView1;
     use ndarray::s;
     use num_traits::Float;
     use num_traits::{Num, NumCast};
@@ -1841,6 +1842,7 @@ pub mod mod_vlsv_tracing {
     use std::io::Write;
     extern crate libc;
     use super::mod_vlsv_reader::*;
+    const DELTA: f64 = 1.0e3;
 
     pub mod physical_constants {
         pub mod f64 {
@@ -1921,6 +1923,7 @@ pub mod mod_vlsv_tracing {
 
     pub trait Field<T: PtrTrait> {
         fn get_fields_at(&self, time: T, x: T, y: T, z: T) -> Option<[T; 6]>;
+        fn ds(&self) -> T;
     }
 
     pub struct DipoleField<T: PtrTrait> {
@@ -1940,6 +1943,12 @@ pub mod mod_vlsv_tracing {
         ds: T,
     }
 
+    pub struct VlsvDynamicField<T: PtrTrait> {
+        //time,field
+        timeline: Vec<(T, VlsvStaticField<T>)>,
+        ds: T,
+    }
+
     impl<T: PtrTrait> VlsvStaticField<T> {
         pub fn new(filename: &String) -> Self {
             let f = VlsvFile::new(&filename).unwrap();
@@ -1951,8 +1960,8 @@ pub mod mod_vlsv_tracing {
                 T::from(f.read_scalar_parameter("ymax").unwrap()).unwrap(),
                 T::from(f.read_scalar_parameter("zmax").unwrap()).unwrap(),
             ];
-            let b = f.read_fsgrid_variable::<T>("fg_b", None).unwrap();
-            let e = f.read_fsgrid_variable::<T>("fg_e", None).unwrap();
+            let b = f.read_variable::<T>("vg_b_vol", None).unwrap();
+            let e = f.read_variable::<T>("vg_e_vol", None).unwrap();
             let ds = (extents[3] - extents[0]) / T::from(b.dim().0).unwrap();
             VlsvStaticField { b, e, extents, ds }
         }
@@ -1979,12 +1988,25 @@ pub mod mod_vlsv_tracing {
             let x0 = x_norm.floor().to_usize()?;
             let y0 = y_norm.floor().to_usize()?;
             let z0 = z_norm.floor().to_usize()?;
-            let x0 = x0.min(dims.0 - 2);
-            let y0 = y0.min(dims.1 - 2);
-            let z0 = z0.min(dims.2 - 2);
-            let xd = x_norm - T::from(x0).unwrap();
-            let yd = y_norm - T::from(y0).unwrap();
-            let zd = z_norm - T::from(z0).unwrap();
+            let x0 = if dims.0 > 1 { x0.min(dims.0 - 2) } else { 0 };
+            let y0 = if dims.1 > 1 { y0.min(dims.1 - 2) } else { 0 };
+            let z0 = if dims.2 > 1 { z0.min(dims.2 - 2) } else { 0 };
+
+            let xd = if dims.0 > 1 {
+                x_norm - T::from(x0).unwrap()
+            } else {
+                T::zero()
+            };
+            let yd = if dims.1 > 1 {
+                y_norm - T::from(y0).unwrap()
+            } else {
+                T::zero()
+            };
+            let zd = if dims.2 > 1 {
+                z_norm - T::from(z0).unwrap()
+            } else {
+                T::zero()
+            };
             Some(([x0, y0, z0], [xd, yd, zd]))
         }
 
@@ -1992,56 +2014,131 @@ pub mod mod_vlsv_tracing {
         fn trilerp(&self, grid_point: [usize; 3], weights: [T; 3], field: &Array4<T>) -> [T; 3] {
             let [x0, y0, z0] = grid_point;
             let [xd, yd, zd] = weights;
+            let (nx, ny, nz, _) = field.dim();
 
-            // Collect 3D neighborhood
-            let c000 = &field.slice(s![x0, y0, z0, ..]);
-            let c001 = &field.slice(s![x0, y0, z0 + 1, ..]);
-            let c010 = &field.slice(s![x0, y0 + 1, z0, ..]);
-            let c011 = &field.slice(s![x0, y0 + 1, z0 + 1, ..]);
-            let c100 = &field.slice(s![x0 + 1, y0, z0, ..]);
-            let c101 = &field.slice(s![x0 + 1, y0, z0 + 1, ..]);
-            let c110 = &field.slice(s![x0 + 1, y0 + 1, z0, ..]);
-            let c111 = &field.slice(s![x0 + 1, y0 + 1, z0 + 1, ..]);
+            fn lerp<T: Float>(a: &ArrayView1<T>, b: &ArrayView1<T>, t: T) -> [T; 3] {
+                [
+                    a[0] * (T::one() - t) + b[0] * t,
+                    a[1] * (T::one() - t) + b[1] * t,
+                    a[2] * (T::one() - t) + b[2] * t,
+                ]
+            }
 
-            // Lerps upcoming
-            let c00 = [
-                c000[0] * (T::one() - xd) + c100[0] * xd,
-                c000[1] * (T::one() - xd) + c100[1] * xd,
-                c000[2] * (T::one() - xd) + c100[2] * xd,
-            ];
-            let c01 = [
-                c001[0] * (T::one() - xd) + c101[0] * xd,
-                c001[1] * (T::one() - xd) + c101[1] * xd,
-                c001[2] * (T::one() - xd) + c101[2] * xd,
-            ];
-            let c10 = [
-                c010[0] * (T::one() - xd) + c110[0] * xd,
-                c010[1] * (T::one() - xd) + c110[1] * xd,
-                c010[2] * (T::one() - xd) + c110[2] * xd,
-            ];
-            let c11 = [
-                c011[0] * (T::one() - xd) + c111[0] * xd,
-                c011[1] * (T::one() - xd) + c111[1] * xd,
-                c011[2] * (T::one() - xd) + c111[2] * xd,
-            ];
+            if nx > 1 && ny > 1 && nz > 1 {
+                let c000 = field.slice(s![x0, y0, z0, ..]);
+                let c001 = field.slice(s![x0, y0, z0 + 1, ..]);
+                let c010 = field.slice(s![x0, y0 + 1, z0, ..]);
+                let c011 = field.slice(s![x0, y0 + 1, z0 + 1, ..]);
+                let c100 = field.slice(s![x0 + 1, y0, z0, ..]);
+                let c101 = field.slice(s![x0 + 1, y0, z0 + 1, ..]);
+                let c110 = field.slice(s![x0 + 1, y0 + 1, z0, ..]);
+                let c111 = field.slice(s![x0 + 1, y0 + 1, z0 + 1, ..]);
 
-            let c0 = [
-                c00[0] * (T::one() - yd) + c10[0] * yd,
-                c00[1] * (T::one() - yd) + c10[1] * yd,
-                c00[2] * (T::one() - yd) + c10[2] * yd,
-            ];
-            let c1 = [
-                c01[0] * (T::one() - yd) + c11[0] * yd,
-                c01[1] * (T::one() - yd) + c11[1] * yd,
-                c01[2] * (T::one() - yd) + c11[2] * yd,
-            ];
+                let c00 = lerp(&c000, &c100, xd);
+                let c01 = lerp(&c001, &c101, xd);
+                let c10 = lerp(&c010, &c110, xd);
+                let c11 = lerp(&c011, &c111, xd);
 
-            //One more lerp and we there!
-            [
-                c0[0] * (T::one() - zd) + c1[0] * zd,
-                c0[1] * (T::one() - zd) + c1[1] * zd,
-                c0[2] * (T::one() - zd) + c1[2] * zd,
-            ]
+                let c0 = [
+                    c00[0] * (T::one() - yd) + c10[0] * yd,
+                    c00[1] * (T::one() - yd) + c10[1] * yd,
+                    c00[2] * (T::one() - yd) + c10[2] * yd,
+                ];
+                let c1 = [
+                    c01[0] * (T::one() - yd) + c11[0] * yd,
+                    c01[1] * (T::one() - yd) + c11[1] * yd,
+                    c01[2] * (T::one() - yd) + c11[2] * yd,
+                ];
+
+                return [
+                    c0[0] * (T::one() - zd) + c1[0] * zd,
+                    c0[1] * (T::one() - zd) + c1[1] * zd,
+                    c0[2] * (T::one() - zd) + c1[2] * zd,
+                ];
+            }
+
+            if nx > 1 && ny > 1 && nz == 1 {
+                let c00 = field.slice(s![x0, y0, 0, ..]);
+                let c10 = field.slice(s![x0 + 1, y0, 0, ..]);
+                let c01 = field.slice(s![x0, y0 + 1, 0, ..]);
+                let c11 = field.slice(s![x0 + 1, y0 + 1, 0, ..]);
+
+                let c0 = lerp(&c00, &c10, xd);
+                let c1 = lerp(&c01, &c11, xd);
+
+                return [
+                    c0[0] * (T::one() - yd) + c1[0] * yd,
+                    c0[1] * (T::one() - yd) + c1[1] * yd,
+                    c0[2] * (T::one() - yd) + c1[2] * yd,
+                ];
+            }
+
+            if nx > 1 && ny == 1 && nz == 1 {
+                let c0 = field.slice(s![x0, 0, 0, ..]);
+                let c1 = field.slice(s![x0 + 1, 0, 0, ..]);
+                return lerp(&c0, &c1, xd);
+            }
+
+            let c: ArrayView1<T> = field.slice(s![0, 0, 0, ..]);
+            [c[0usize], c[1usize], c[2usize]]
+        }
+    }
+
+    impl<T: PtrTrait> VlsvDynamicField<T> {
+        pub fn new(dir: &str) -> Self {
+            use std::fs;
+            let mut timeline = Vec::new();
+            let mut ds: T = T::zero();
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().map(|e| e == "vlsv").unwrap_or(false) {
+                    let filename = path.to_string_lossy().to_string();
+                    println!("Loading {}...", filename);
+                    let f = VlsvFile::new(&filename).unwrap();
+                    let t: T = T::from(f.read_scalar_parameter("time").unwrap()).unwrap();
+                    let fields = VlsvStaticField::new(&filename);
+                    ds = fields.ds();
+                    timeline.push((t, fields));
+                }
+            }
+            timeline.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            Self { timeline, ds }
+        }
+    }
+
+    impl<T: PtrTrait> Field<T> for VlsvDynamicField<T> {
+        fn get_fields_at(&self, time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
+            if self.timeline.is_empty() {
+                return None;
+            }
+            if self.timeline.len() == 1 {
+                return self.timeline[0].1.get_fields_at(time, x, y, z);
+            }
+            let mut i = 0;
+            while i + 1 < self.timeline.len() && self.timeline[i + 1].0 <= time {
+                i += 1;
+            }
+            if i + 1 == self.timeline.len() {
+                return self.timeline[i].1.get_fields_at(time, x, y, z);
+            }
+
+            let (t0, ref f0) = self.timeline[i];
+            let (t1, ref f1) = self.timeline[i + 1];
+            let frac = (time - t0) / (t1 - t0);
+            let fields0 = f0.get_fields_at(time, x, y, z)?;
+            let fields1 = f1.get_fields_at(time, x, y, z)?;
+            //Temporal lerp
+            Some([
+                fields0[0] * (T::one() - frac) + fields1[0] * frac,
+                fields0[1] * (T::one() - frac) + fields1[1] * frac,
+                fields0[2] * (T::one() - frac) + fields1[2] * frac,
+                fields0[3] * (T::one() - frac) + fields1[3] * frac,
+                fields0[4] * (T::one() - frac) + fields1[4] * frac,
+                fields0[5] * (T::one() - frac) + fields1[5] * frac,
+            ])
+        }
+        fn ds(&self) -> T {
+            return self.ds;
         }
     }
 
@@ -2060,6 +2157,10 @@ pub mod mod_vlsv_tracing {
         fn get_fields_at(&self, _time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
             return Some(earth_dipole::<T>(x, y, z));
         }
+
+        fn ds(&self) -> T {
+            return T::from(DELTA).unwrap();
+        }
     }
 
     impl<T: PtrTrait> Field<T> for VlsvStaticField<T> {
@@ -2070,6 +2171,10 @@ pub mod mod_vlsv_tracing {
             Some([
                 b_field[0], b_field[1], b_field[2], e_field[0], e_field[1], e_field[2],
             ])
+        }
+
+        fn ds(&self) -> T {
+            return self.ds;
         }
     }
     pub fn mag<T>(x: T, y: T, z: T) -> T
@@ -2463,6 +2568,272 @@ pub mod mod_vlsv_tracing {
                 t = t + new_dt;
                 *dt = new_dt;
             }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct GuidingCenter2D<T: PtrTrait> {
+        pub x: T,
+        pub y: T,
+        pub vpar: T,
+        pub mu: T,
+        pub alive: bool,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct GCPopulation<T: PtrTrait> {
+        pub particles: Vec<GuidingCenter2D<T>>,
+        pub mass: T,
+        pub charge: T,
+    }
+
+    impl<T: PtrTrait> GCPopulation<T> {
+        pub fn new(mass: T, charge: T) -> Self {
+            Self {
+                particles: Vec::new(),
+                mass,
+                charge,
+            }
+        }
+
+        pub fn add(&mut self, gc: GuidingCenter2D<T>) {
+            self.particles.push(gc);
+        }
+
+        pub fn size(&self) -> usize {
+            self.particles.len()
+        }
+
+        //Write in the same way we write full particles
+        pub fn save(&self, filename: &str) {
+            let size = self.size();
+            let datasize = std::mem::size_of::<T>();
+            let cap = size * datasize * 6 + size;
+            let mut data: Vec<u8> = Vec::with_capacity(cap);
+            let size_bytes: [u8; std::mem::size_of::<usize>()] = size.to_ne_bytes();
+            data.extend_from_slice(&size_bytes);
+            let datasize_bytes: [u8; std::mem::size_of::<usize>()] = datasize.to_ne_bytes();
+            data.extend_from_slice(&datasize_bytes);
+
+            // x
+            for i in 0..size {
+                let bytes = self.particles[i].x.to_ne_bytes();
+                data.extend_from_slice(bytes.as_ref());
+            }
+            // y
+            for i in 0..size {
+                let bytes = self.particles[i].y.to_ne_bytes();
+                data.extend_from_slice(bytes.as_ref());
+            }
+            // z = 0
+            for _ in 0..size {
+                let bytes = T::zero().to_ne_bytes();
+                data.extend_from_slice(bytes.as_ref());
+            }
+            // vx = vpar
+            for i in 0..size {
+                let bytes = self.particles[i].vpar.to_ne_bytes();
+                data.extend_from_slice(bytes.as_ref());
+            }
+            // vy = mu
+            for i in 0..size {
+                let bytes = self.particles[i].mu.to_ne_bytes();
+                data.extend_from_slice(bytes.as_ref());
+            }
+            // vz = 0
+            for _ in 0..size {
+                let bytes = T::zero().to_ne_bytes();
+                data.extend_from_slice(bytes.as_ref());
+            }
+            // alive flags
+            for i in 0..size {
+                data.push(self.particles[i].alive as u8);
+            }
+
+            println!(
+                "\tWriting {}/{} bytes to {}",
+                data.len(),
+                cap + 8 + 8,
+                filename
+            );
+            let mut file = std::fs::File::create(filename).expect("Failed to create file");
+            file.write_all(&data)
+                .expect("Failed to write GC state to file!");
+        }
+    }
+
+    pub fn euler_gc_step<T: PtrTrait, F: Field<T>>(
+        gc: &GuidingCenter2D<T>,
+        f: &F,
+        t: T,
+        dt: T,
+        charge: T,
+        mass: T,
+    ) -> GuidingCenter2D<T> {
+        let fields = f.get_fields_at(t, gc.x, gc.y, T::zero()).unwrap();
+        let b = [fields[0], fields[1], fields[2]];
+        let e = [fields[3], fields[4], fields[5]];
+        let bmag = mag(b[0], b[1], b[2]);
+        if bmag <= T::epsilon() {
+            let mut dead = gc.clone();
+            dead.alive = false;
+            return dead;
+        }
+
+        // ExB
+        let inv_b2 = T::one() / (bmag * bmag);
+        let v_exb = [
+            (e[1] * b[2] - e[2] * b[1]) * inv_b2,
+            (e[2] * b[0] - e[0] * b[2]) * inv_b2,
+            (e[0] * b[1] - e[1] * b[0]) * inv_b2,
+        ];
+
+        // GradB
+        let delta = f.ds() / T::from(4).unwrap();
+        let (bpx, bmx, bpy, bmy) = match (
+            f.get_fields_at(t, gc.x + delta, gc.y, T::zero()),
+            f.get_fields_at(t, gc.x - delta, gc.y, T::zero()),
+            f.get_fields_at(t, gc.x, gc.y + delta, T::zero()),
+            f.get_fields_at(t, gc.x, gc.y - delta, T::zero()),
+        ) {
+            (Some(bpx), Some(bmx), Some(bpy), Some(bmy)) => (bpx, bmx, bpy, bmy),
+            _ => {
+                let mut dead = gc.clone();
+                dead.alive = false;
+                return dead;
+            }
+        };
+
+        let grad_b = [
+            (mag(bpx[0], bpx[1], bpx[2]) - mag(bmx[0], bmx[1], bmx[2]))
+                / (T::from(2.0).unwrap() * delta),
+            (mag(bpy[0], bpy[1], bpy[2]) - mag(bmy[0], bmy[1], bmy[2]))
+                / (T::from(2.0).unwrap() * delta),
+            T::zero(),
+        ];
+
+        let v_gradb_3d = [
+            (b[1] * grad_b[2] - b[2] * grad_b[1]),
+            (b[2] * grad_b[0] - b[0] * grad_b[2]),
+            (b[0] * grad_b[1] - b[1] * grad_b[0]),
+        ];
+
+        // Curvature drift
+        let b_hat = [b[0] / bmag, b[1] / bmag, b[2] / bmag];
+        let fwd = f
+            .get_fields_at(
+                t,
+                gc.x + b_hat[0] * delta,
+                gc.y + b_hat[1] * delta,
+                b_hat[2] * delta,
+            )
+            .unwrap();
+        let back = f
+            .get_fields_at(
+                t,
+                gc.x - b_hat[0] * delta,
+                gc.y - b_hat[1] * delta,
+                -b_hat[2] * delta,
+            )
+            .unwrap();
+        let db_ds = [
+            (fwd[0] - back[0]) / (T::from(2.0).unwrap() * delta),
+            (fwd[1] - back[1]) / (T::from(2.0).unwrap() * delta),
+            (fwd[2] - back[2]) / (T::from(2.0).unwrap() * delta),
+        ];
+        let b_cross_bgrad = [
+            b[1] * db_ds[2] - b[2] * db_ds[1],
+            b[2] * db_ds[0] - b[0] * db_ds[2],
+            b[0] * db_ds[1] - b[1] * db_ds[0],
+        ];
+
+        //Factors
+        let q = charge;
+        let mu = gc.mu;
+        let vpar2 = gc.vpar * gc.vpar;
+
+        let v_gradb_2d = [
+            v_gradb_3d[0] * (mu / (q * bmag * bmag)),
+            v_gradb_3d[1] * (mu / (q * bmag * bmag)),
+        ];
+        let v_curv_2d = [
+            b_cross_bgrad[0] * (mass * vpar2 / (q * bmag * bmag * bmag)),
+            b_cross_bgrad[1] * (mass * vpar2 / (q * bmag * bmag * bmag)),
+        ];
+        let v_exb_2d = [v_exb[0], v_exb[1]];
+
+        let vx = v_exb_2d[0] + v_gradb_2d[0] + v_curv_2d[0];
+        let vy = v_exb_2d[1] + v_gradb_2d[1] + v_curv_2d[1];
+
+        let mut out = gc.clone();
+        out.x = out.x + vx * dt;
+        out.y = out.y + vy * dt;
+        out
+    }
+
+    pub fn gc_adaptive<T: PtrTrait, F: Field<T> + Sync>(
+        gc: &mut GuidingCenter2D<T>,
+        f: &F,
+        dt: &mut T,
+        t0: T,
+        t1: T,
+        mass: T,
+        charge: T,
+    ) {
+        let mut t = t0;
+        let min_dt = T::from(1e-5).unwrap();
+        const MAX_ITER: usize = 1000000;
+
+        let mut iter = 0;
+        while t < t1 && gc.alive && iter < MAX_ITER {
+            iter += 1;
+            if t + *dt > t1 {
+                *dt = t1 - t;
+            }
+
+            //1st order
+            let p_full = euler_gc_step(gc, f, t, *dt, charge, mass);
+
+            // 2nd order
+            let p_mid = euler_gc_step(gc, f, t, *dt / T::from(2.0).unwrap(), charge, mass);
+            let p_half = euler_gc_step(
+                &p_mid,
+                f,
+                t + *dt / T::from(2.0).unwrap(),
+                *dt / T::from(2.0).unwrap(),
+                charge,
+                mass,
+            );
+
+            // error
+            let ex = (p_half.x - p_full.x).abs();
+            let ey = (p_half.y - p_full.y).abs();
+            let error = if ex > ey { ex } else { ey };
+
+            // tolerance
+            let v_fields = f.get_fields_at(t, gc.x, gc.y, T::zero()).unwrap();
+            let b = [v_fields[0], v_fields[1], v_fields[2]];
+            let e = [v_fields[3], v_fields[4], v_fields[5]];
+            let bmag = mag(b[0], b[1], b[2]);
+            let inv_b2 = T::one() / (bmag * bmag);
+            let v_exb = [
+                (e[1] * b[2] - e[2] * b[1]) * inv_b2,
+                (e[2] * b[0] - e[0] * b[2]) * inv_b2,
+            ];
+            let vmag = mag(v_exb[0], v_exb[1], T::zero());
+            let tol = T::from(1e-3).unwrap() * vmag * *dt + T::from(1e-6).unwrap();
+
+            if error < tol || *dt <= min_dt {
+                *gc = p_half.clone();
+                t = t + *dt;
+                *dt = T::from(1.1).unwrap() * *dt;
+            } else {
+                *dt = *dt * T::from(0.5).unwrap();
+            }
+        }
+
+        if iter >= MAX_ITER {
+            eprintln!("WARNING: gc_adaptive hit MAX_ITER without finishing interval");
         }
     }
 }

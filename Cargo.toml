@@ -39,7 +39,11 @@ required-features = ["vlsv_dump"]
 [[bin]]
 name="vlsv_ptr"
 path="src/vlsv_ptr.rs"
-required-features = ["vlsv_ptr"]  
+required-features = ["vlsv_ptr"]
+[[bin]]
+name="vlsv_ptr_gc2d"
+path="src/vlsv_ptr_gc2d.rs"
+required-features = ["vlsv_ptr_gc2d"]   
 
 [[bin]]
 name="vlsv_view"
@@ -57,6 +61,7 @@ with_bindings = ["dep:pyo3","dep:rayon", "dep:numpy","dep:tokio-uring","dep:futu
 uring = ["dep:tokio-uring", "dep:futures"]
 vlsv_view = ["dep:raylib"]
 vlsv_ptr = ["dep:rayon","dep:rand","dep:rand_distr"]
+vlsv_ptr_gc2d = ["dep:rayon","dep:rand","dep:rand_distr"]
 vlsv_dump = ["dep:clap"]
 
 [profile.release]
