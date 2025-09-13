@@ -2135,6 +2135,13 @@ pub mod mod_vlsv_tracing {
             };
             Self { timeline, ds }
         }
+
+        pub fn temporal_range(&self) -> (T, T) {
+            return (
+                self.timeline.first().unwrap().0,
+                self.timeline.last().unwrap().0,
+            );
+        }
     }
 
     impl<T: PtrTrait> Field<T> for VlsvDynamicField<T> {
@@ -2151,6 +2158,10 @@ pub mod mod_vlsv_tracing {
             }
             if i + 1 == self.timeline.len() {
                 return self.timeline[i].1.get_fields_at(time, x, y, z);
+            }
+            let (tmin, tmax) = self.temporal_range();
+            if time < tmin || time > tmax {
+                panic!("Time {time} is outside of directory temporal range {tmin} - {tmax}!");
             }
 
             let (t0, ref f0) = self.timeline[i];

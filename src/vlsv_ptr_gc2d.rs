@@ -55,11 +55,12 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let pitch = pitch_angle_deg.to_radians();
     let vpar = v * pitch.cos();
     let vperp = v * pitch.sin();
+    let mut actual_time: f64 = 0.0;
 
     let mut pop = GCPopulation::new(mass, charge);
     for L in 8..=10 {
         let r = (L as f64) * physical_constants::f64::EARTH_RE;
-        let fields_here = fields.get_fields_at(0.0, r, 0.0, 0.0).unwrap();
+        let fields_here = fields.get_fields_at(actual_time, r, 0.0, 0.0).unwrap();
         let bmag = mag(fields_here[0], fields_here[1], fields_here[2]);
         let mu = 0.5 * mass * vperp * vperp / bmag;
 
@@ -73,7 +74,6 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
         });
     }
     let mut pop = Arc::new(Mutex::new(pop));
-    let mut actual_time: f64 = 0.0;
     for out in 0..500 {
         push_gc_population_cpu_adpt(&mut pop, &fields, 5.0, &mut actual_time);
         let fname = format!("state.{:07}.ptr", out);
