@@ -2618,6 +2618,7 @@ pub mod mod_vlsv_tracing {
         pub x: T,
         pub y: T,
         pub vpar: T,
+        pub vperp: T,
         pub mu: T,
         pub alive: bool,
         pub dt: T,
@@ -2684,8 +2685,8 @@ pub mod mod_vlsv_tracing {
                 data.extend_from_slice(bytes.as_ref());
             }
             // vz = 0
-            for _ in 0..size {
-                let bytes = T::zero().to_ne_bytes();
+            for i in 0..size {
+                let bytes = self.particles[i].vperp.to_ne_bytes();
                 data.extend_from_slice(bytes.as_ref());
             }
             // alive flags
@@ -2803,6 +2804,7 @@ pub mod mod_vlsv_tracing {
         //Factors
         let q = charge;
         let mu = gc.mu;
+        let vperp = mu * bmag / (T::from(0.5).unwrap() * mass);
         let vpar2 = gc.vpar * gc.vpar;
 
         let v_gradb_2d = [
@@ -2821,6 +2823,7 @@ pub mod mod_vlsv_tracing {
         let mut out = gc.clone();
         out.x = out.x + vx * dt;
         out.y = out.y + vy * dt;
+        out.vperp = vperp;
         out
     }
 
