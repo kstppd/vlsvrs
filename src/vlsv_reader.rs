@@ -2804,7 +2804,8 @@ pub mod mod_vlsv_tracing {
         //Factors
         let q = charge;
         let mu = gc.mu;
-        let vperp = mu * bmag / (T::from(0.5).unwrap() * mass);
+        let vperp = ((T::from(2.0).unwrap() * mu * bmag) / mass).sqrt();
+
         let vpar2 = gc.vpar * gc.vpar;
 
         let v_gradb_2d = [
@@ -2824,6 +2825,8 @@ pub mod mod_vlsv_tracing {
         out.x = out.x + vx * dt;
         out.y = out.y + vy * dt;
         out.vperp = vperp;
+        // let en = T::from(1e-3).unwrap() * T::from(0.5).unwrap() * mass * vperp * vperp
+        //     / T::from(1.602176634e-19).unwrap();
         out
     }
 
