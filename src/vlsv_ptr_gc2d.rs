@@ -10,6 +10,11 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
 
+//Configure these
+const TOUT: f64 = 5.0; //output file cadence in seconds
+const TMAX: f64 = 700.0; // run until we hit this
+const VLSV_DIR: &str = "/wrk-vakka/group/spacephysics/vlasiator/2D/AID/bulk/";
+
 pub fn push_gc_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
     pop: &mut Arc<Mutex<GCPopulation<T>>>,
     f: &F,
@@ -46,9 +51,7 @@ pub fn push_gc_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let args: Vec<String> = env::args().collect();
-    let fields = VlsvDynamicField::<f64>::new(&String::from(
-        "/wrk-vakka/group/spacephysics/vlasiator/2D/AID/bulk/",
-    ));
+    let fields = VlsvDynamicField::<f64>::new(VLSV_DIR);
     let mass = physical_constants::f64::PROTON_MASS;
     let charge = physical_constants::f64::PROTON_CHARGE;
     let mut actual_time: f64 = 0.0;
@@ -76,7 +79,7 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
             actual_time = time;
             let fields_here = fields
                 .get_fields_at(actual_time, x, y, z)
-                .unwrap_or([0.0, 0.0, 30e-9, 0.0, 0.0, 0.0]);
+                .expect("Could not get fields during initialization");
             let bmag = mag(fields_here[0], fields_here[1], fields_here[2]);
             let vperp2 = vx * vx + vy * vy;
             let mu = 0.5 * mass * vperp2 / bmag;
@@ -119,11 +122,13 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     }
 
     let mut pop = Arc::new(Mutex::new(pop));
-    for out in 0..500 {
-        push_gc_population_cpu_adpt(&mut pop, &fields, 5.0, &mut actual_time);
+    let mut out = 0;
+    while actual_time < TMAX {
+        push_gc_population_cpu_adpt(&mut pop, &fields, TOUT, &mut actual_time);
         let fname = format!("state.{:07}.ptr", out);
         let locked = pop.lock().unwrap();
         locked.save(&fname);
+        out = out + 1;
     }
     Ok(std::process::ExitCode::SUCCESS)
 }
