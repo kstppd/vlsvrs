@@ -17,6 +17,7 @@ use std::io::Write;
 
 const INIT_TIME: f32 = 305.0;
 const PPC: usize = 1024;
+const STRIDE: usize = 32;
 const SPARSE: f32 = 1e-16;
 
 struct Particle {
@@ -42,7 +43,7 @@ fn main() {
 
     println!(
         "Sampling particles from {restart_file} [PPC={PPC} N={}].",
-        PPC * ncells
+        PPC * ncells / STRIDE
     );
     let (nvx, nvy, nvz) = f
         .get_vspace_mesh_bbox("proton")
@@ -62,6 +63,7 @@ fn main() {
 
     let particles: Vec<Particle> = (1..=ncells)
         .into_par_iter()
+        .filter(|&cid| (cid - 1) % STRIDE == 0)
         .flat_map(|cid| {
             let mut rng = rng();
             let coords = f
