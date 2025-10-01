@@ -86,7 +86,7 @@ fn main() {
             }
 
             if sum <= 0.0 {
-                panic!("This should never happen!");
+                return Vec::<Particle>::new();
             }
             let dist = WeightedIndex::new(&weights).unwrap();
             (0..PPC)
