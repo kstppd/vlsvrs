@@ -511,6 +511,120 @@ pub mod mod_vlsv_reader {
                 dataz.last().copied()?,
             ))
         }
+
+        pub fn get_amr_level(&self, mut cellid: u64) -> Option<i32> {
+            let x0 = self.read_scalar_parameter("xcells_ini")? as u64;
+            let y0 = self.read_scalar_parameter("ycells_ini")? as u64;
+            let z0 = self.read_scalar_parameter("zcells_ini")? as u64;
+            let max_ref = self.get_max_amr_refinement()? as i32;
+            let n0 = x0.saturating_mul(y0).saturating_mul(z0);
+            if n0 == 0 {
+                return Some(-1);
+            }
+
+            let mut count: i32 = 0;
+            let mut iters: i32 = 0;
+            while cellid > 0 {
+                let pow8 = 8u64.saturating_pow(count as u32);
+                let sub = n0.saturating_mul(pow8);
+                cellid = cellid.saturating_sub(sub);
+                count += 1;
+                iters += 1;
+                if iters > max_ref + 1 {
+                    eprintln!("Something broke.");
+                    break;
+                }
+            }
+            Some(count - 1)
+        }
+
+        pub fn get_amr_level_batch(&self, cellids: &[u64]) -> Option<Vec<i32>> {
+            let x0 = self.read_scalar_parameter("xcells_ini")? as u64;
+            let y0 = self.read_scalar_parameter("ycells_ini")? as u64;
+            let z0 = self.read_scalar_parameter("zcells_ini")? as u64;
+            let max_ref = self.get_max_amr_refinement()? as i32;
+            let n0 = x0.saturating_mul(y0).saturating_mul(z0);
+            if n0 == 0 {
+                return Some(vec![-1; cellids.len()]);
+            }
+            let mut levels = vec![0i32; cellids.len()];
+            let mut remaining: Vec<u64> = cellids.to_vec();
+            let mut iters: i32 = 0;
+
+            loop {
+                let mut any_pos = false;
+                for (i, cid) in remaining.iter_mut().enumerate() {
+                    if *cid > 0 {
+                        any_pos = true;
+                        let pow8 = 8u64.saturating_pow(levels[i] as u32);
+                        let sub = n0.saturating_mul(pow8);
+                        *cid = cid.saturating_sub(sub);
+                        levels[i] += 1;
+                    }
+                }
+                if !any_pos {
+                    break;
+                }
+                iters += 1;
+                if iters > max_ref + 1 {
+                    eprintln!("Can't have that large refinements. Something broke.");
+                    break;
+                }
+            }
+            for l in &mut levels {
+                *l -= 1;
+            }
+            Some(levels)
+        }
+
+        //Cell centers here
+        pub fn get_cell_coordinate(&self, cellid: u64) -> Option<[f64; 3]> {
+            self.get_cell_coordinates_batch(&[cellid])
+                .and_then(|v| v.into_iter().next())
+        }
+
+        pub fn get_cell_coordinates_batch(&self, cellids: &[u64]) -> Option<Vec<[f64; 3]>> {
+            let xmin = self.read_scalar_parameter("xmin")? as f64;
+            let ymin = self.read_scalar_parameter("ymin")? as f64;
+            let zmin = self.read_scalar_parameter("zmin")? as f64;
+            let xmax = self.read_scalar_parameter("xmax")? as f64;
+            let ymax = self.read_scalar_parameter("ymax")? as f64;
+            let zmax = self.read_scalar_parameter("zmax")? as f64;
+
+            let x0 = self.read_scalar_parameter("xcells_ini")? as usize;
+            let y0 = self.read_scalar_parameter("ycells_ini")? as usize;
+            let z0 = self.read_scalar_parameter("zcells_ini")? as usize;
+            let lmax = self.get_max_amr_refinement()? as u32;
+
+            let fx = (x0 as u32) << lmax;
+            let fy = (y0 as u32) << lmax;
+            let fz = (z0 as u32) << lmax;
+            if fx == 0 || fy == 0 || fz == 0 {
+                return Some(vec![]);
+            }
+            let dx_f = (xmax - xmin) / (fx as f64);
+            let dy_f = (ymax - ymin) / (fy as f64);
+            let dz_f = (zmax - zmin) / (fz as f64);
+            let levels = self.get_amr_level_batch(cellids)?;
+            let mut coords = Vec::<[f64; 3]>::with_capacity(cellids.len());
+            for (cid, lvl_i32) in cellids.iter().copied().zip(levels.into_iter()) {
+                let lvl = if lvl_i32 < 0 { 0u32 } else { lvl_i32 as u32 };
+                let (i_f, j_f, k_f) = match cid2fineijk(cid, lvl, lmax, x0, y0, z0) {
+                    Some(t) => t,
+                    None => {
+                        coords.push([f64::NAN, f64::NAN, f64::NAN]);
+                        continue;
+                    }
+                };
+                let scale = 1usize << ((lmax - lvl) as usize);
+                let cx = xmin + ((i_f as f64) + (scale as f64) * 0.5) * dx_f;
+                let cy = ymin + ((j_f as f64) + (scale as f64) * 0.5) * dy_f;
+                let cz = zmin + ((k_f as f64) + (scale as f64) * 0.5) * dz_f;
+                coords.push([cx, cy, cz]);
+            }
+            Some(coords)
+        }
+
         pub fn get_vspace_mesh_extents(&self, pop: &str) -> Option<(f64, f64, f64, f64, f64, f64)> {
             let nodes_x = TryInto::<VlsvDataset>::try_into(
                 self.root()
