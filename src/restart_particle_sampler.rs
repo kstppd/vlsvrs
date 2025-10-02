@@ -15,10 +15,14 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::io::Write;
 
+//Some configuration params
 const INIT_TIME: f32 = 305.0;
 const PPC: usize = 1024;
 const STRIDE: usize = 32;
 const SPARSE: f32 = 1e-16;
+const LSHELL_MIN: f64 = 8.0;
+const LSHELL_MAX: f64 = 20.0;
+const RE: f64 = 6378137.0;
 
 struct Particle {
     x: f32,
@@ -69,6 +73,12 @@ fn main() {
             let coords = f
                 .get_cell_coordinate(cid as u64)
                 .expect("Could not read in coordinates for cid {cid}");
+            let rho = ((coords[0] * coords[0] + coords[1] * coords[1] + coords[2] * coords[2])
+                .sqrt())
+                / RE;
+            if rho < LSHELL_MIN || rho > LSHELL_MAX {
+                return Vec::<Particle>::new();
+            }
 
             let vdf = f
                 .read_vdf::<f32>(cid, "proton")
