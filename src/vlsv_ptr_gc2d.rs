@@ -121,9 +121,11 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
         }
     }
 
+    let len = pop.particles.len();
     let mut pop = Arc::new(Mutex::new(pop));
     let mut out = 0;
     while actual_time < TMAX {
+        println!("Tracing {} particles at t= {:02} s", len, actual_time);
         push_gc_population_cpu_adpt(&mut pop, &fields, TOUT, &mut actual_time);
         let fname = format!("state.{:07}.ptr", out);
         let locked = pop.lock().unwrap();
