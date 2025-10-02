@@ -10,8 +10,8 @@ some projects in Vlasiator (Asterix, Faiser...).
 A very very nice thing here is that we can actually read
 in a VDF into a dense mesh (we can also remap the VDF to a target mesh)
 which is handy for training neural nets. And it can just read all you need
-with a simple call. And it is not python! (This did not really age well since most 
-people who now use vlsvrs actually only use the python bindings (me as well :D ))
+with a simple call. And it is not python! (**This did not really age well since most 
+people who now use vlsvrs actually only use the python bindings (me included :D )**)
 
 This package is written in rust, so you will need [cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
 
