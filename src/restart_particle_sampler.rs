@@ -23,6 +23,12 @@ const SPARSE: f32 = 1e-16;
 const LSHELL_MIN: f64 = 8.0;
 const LSHELL_MAX: f64 = 20.0;
 const RE: f64 = 6378137.0;
+const XMIN: f64 = -10.0;
+const XMAX: f64 = 1000.0;
+const YMIN: f64 = -10.0;
+const YMAX: f64 = 1000.0;
+const ZMIN: f64 = -1000.0;
+const ZMAX: f64 = 1000.0;
 
 struct Particle {
     x: f32,
@@ -73,10 +79,17 @@ fn main() {
             let coords = f
                 .get_cell_coordinate(cid as u64)
                 .expect("Could not read in coordinates for cid {cid}");
-            let rho = ((coords[0] * coords[0] + coords[1] * coords[1] + coords[2] * coords[2])
-                .sqrt())
-                / RE;
-            if rho < LSHELL_MIN || rho > LSHELL_MAX {
+            // let rho = ((coords[0] * coords[0] + coords[1] * coords[1] + coords[2] * coords[2])
+            //     .sqrt())
+            //     / RE;
+            // if rho < LSHELL_MIN || rho > LSHELL_MAX {
+            //     return Vec::<Particle>::new();
+            // }
+            let x = coords[0] / RE;
+            let y = coords[1] / RE;
+            let z = coords[2] / RE;
+            let is_in_box = x > XMIN && x < XMAX && y > YMIN && y < YMAX && z > ZMIN && z < ZMAX;
+            if !is_in_box {
                 return Vec::<Particle>::new();
             }
 
