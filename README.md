@@ -55,6 +55,8 @@ int main() {
          vdf2.nx, vdf2.ny, vdf2.nz, vdf2.xmin, vdf2.ymin, vdf2.zmin, vdf2.xmax,
          vdf2.ymax, vdf2.zmax, vdf2.data);
   printf("Hello World!\n");
+
+  //RAII?? GG...
   free(vdf1.data);
   free(vdf2.data);
 }
