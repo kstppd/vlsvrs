@@ -1,4 +1,4 @@
-# VLSV Tools
+# VLSVRS
 
 Motivation:
 I hate all available methods of reading in VLSV files.
