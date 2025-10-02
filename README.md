@@ -144,7 +144,7 @@ let data:Array4<_> = f.read_vdf::<f32>(256, "proton")).unwrap();
   Particle tracing routines using fields from Vlasiator.
     **Keywords:**
     get_fields_at, new_with_energy_at_Lshell, boris, larmor_radius, borris_adaptive
-    ![Demo](video.gif)
+    ![Demo](video.gif) 
 
 ## 3) MOD_VLSV_EXPORTS
   Creates C and Python interfaces for VLSV_READER.
