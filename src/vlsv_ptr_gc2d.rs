@@ -2,6 +2,7 @@
 #![allow(non_snake_case)]
 mod vlsv_reader;
 use crate::mod_vlsv_tracing::*;
+use crate::physical_constants::f64::*;
 use crate::vlsv_reader::*;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
@@ -133,4 +134,128 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
         out = out + 1;
     }
     Ok(std::process::ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+    use std::sync::{Arc, Mutex};
+
+    const PERIOD_TOL_REL: f64 = 0.01;
+    const PHASE_TOL_DEG: f64 = 10.0;
+
+    #[inline]
+    fn wrap_deg(a: f64) -> f64 {
+        let mut x = a % 360.0;
+        if x < 0.0 {
+            x += 360.0;
+        }
+        x
+    }
+
+    #[inline]
+    fn drift_period(vpar: f64, vperp: f64, r: f64, b: f64, q: f64, m: f64) -> (f64, f64) {
+        let omega_d = m * (1.5 * vperp * vperp + vpar * vpar) / (q * b * r * r);
+        let td = 2.0 * PI / omega_d.abs();
+        (omega_d, td)
+    }
+
+    fn get_case(fields: &DipoleField<f64>, energy_kev: f64, L: f64) -> (GCPopulation<f64>, f64) {
+        let mass = PROTON_MASS;
+        let charge = PROTON_CHARGE;
+
+        let ke_j = energy_kev * 1.0e3 * EV_TO_JOULE;
+        let v = (2.0 * ke_j / mass).sqrt();
+        let vpar = 0.0;
+        let vperp = v;
+
+        let r = L * EARTH_RE;
+        let f = fields.get_fields_at(0.0, r, 0.0, 0.0).unwrap();
+        let bmag = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt();
+        let mu = 0.5 * mass * vperp * vperp / bmag;
+
+        let mut pop = GCPopulation::new(mass, charge);
+        pop.add(GuidingCenter2D {
+            x: r,
+            y: 0.0,
+            vpar,
+            vperp,
+            mu,
+            alive: true,
+            dt: 1e-2,
+        });
+        (pop, bmag)
+    }
+
+    fn drift_test(L: f64) -> bool {
+        let fields = DipoleField::<f64>::new(8e15_f64);
+        let energies_kev: [f64; _] = [75.0, 90.0, 100.0, 200.0, 300.0, 400.0];
+        struct Row {
+            e_kev: f64,
+            td_ana: f64,
+            t_sim: f64,
+            rel_err: f64,
+            pass: bool,
+        }
+        let mut rows: Vec<Row> = Vec::with_capacity(energies_kev.len());
+        let mut all_ok = true;
+        for &e_kev in &energies_kev {
+            let (pop0, bmag) = get_case(&fields, e_kev, L);
+            let p0 = pop0.particles.first().unwrap().clone();
+            let r = (p0.x.hypot(p0.y)).abs();
+            let (omega_d, td) =
+                drift_period(p0.vpar, p0.vperp, r, bmag, PROTON_CHARGE, PROTON_MASS);
+            let mut actual_time: f64 = 0.0;
+            let mut pop_arc = Arc::new(Mutex::new(pop0));
+            while actual_time < td {
+                push_gc_population_cpu_adpt(&mut pop_arc, &fields, TOUT, &mut actual_time);
+            }
+            let p_end = pop_arc.lock().unwrap().particles.first().unwrap().clone();
+            let t_sim = actual_time;
+            let rel_err = (t_sim - td).abs() / td.max(1.0);
+            let phi_sim_deg = wrap_deg(p_end.y.atan2(p_end.x).to_degrees());
+            let phi_ana_deg = wrap_deg((omega_d * t_sim).to_degrees());
+            let mut dphi = (phi_sim_deg - phi_ana_deg).abs();
+            if dphi > 180.0 {
+                dphi = 360.0 - dphi;
+            }
+
+            let pass = rel_err <= PERIOD_TOL_REL && dphi <= PHASE_TOL_DEG;
+            all_ok &= pass;
+
+            rows.push(Row {
+                e_kev: e_kev,
+                td_ana: td,
+                t_sim,
+                rel_err,
+                pass,
+            });
+        }
+
+        eprintln!("\nDRIFTS  (Dipole, R={} Re, pitch=90°):", L);
+        eprintln!(
+            "{:>7} | {:>10} | {:>10} | {:>9} | {}",
+            "keV", "T_theory", "T_simulated", "error %", "Status"
+        );
+        eprintln!("{}", "-".repeat(64));
+        for r in &rows {
+            eprintln!(
+                "{:7.1} | {:10.3} | {:10.3} | {:9.3} | {}",
+                r.e_kev,
+                r.td_ana,
+                r.t_sim,
+                100.0 * r.rel_err,
+                if r.pass { "yes" } else { "NO " }
+            );
+        }
+        return all_ok;
+    }
+    #[test]
+    fn test() {
+        [4.0, 8.0, 12.0, 30.0].par_iter().for_each(|&L| {
+            eprintln!("Testing L={}", L);
+            assert!(drift_test(L), "FATAL::TEST AT L {} FAILED", L);
+        });
+    }
 }
