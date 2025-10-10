@@ -403,7 +403,7 @@ pub mod mod_vlsv_reader {
             Some(wid as usize)
         }
 
-        pub fn get_wid(&self, pop: &str) -> Option<usize> {
+        pub fn get_wid(&self, _pop: &str) -> Option<usize> {
             Some(self.read_scalar_parameter("velocity_block_width").unwrap() as usize)
         }
 
@@ -996,6 +996,39 @@ pub mod mod_vlsv_reader {
                     }
                     Some(vdf)
                 }
+                //No blockids here
+                CompressionMethod::OCTREE => {
+                    let vdf_byte_size =
+                        self.read_scalar_parameter("VDF_BYTE_SIZE").unwrap() as usize;
+                    if vdf_byte_size != std::mem::size_of::<T>() {
+                        panic!(
+                            "This reader will not work for this combo of T and compressed VDF BYTE SIZE"
+                        );
+                    }
+                    let bytespercell = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .bytespercell
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+                    let mut bytes_per_cell: Vec<u64> = vec![0; bytespercell.arraysize];
+                    self.read_variable_into::<u64>(None, Some(bytespercell), &mut bytes_per_cell);
+                    let index = cids_with_blocks.iter().position(|&v| v == cid)?;
+                    let read_size = bytes_per_cell[index] as usize;
+                    let read_offset = bytes_per_cell[..index]
+                        .iter()
+                        .map(|&x| x as usize)
+                        .sum::<usize>();
+                    let mut octree_bytes: Vec<u8> = vec![0_u8; read_size];
+                    let blockvar_slice = slice_ds(&blockvariable, read_offset, read_size);
+                    self.read_variable_into::<u8>(None, Some(blockvar_slice), &mut octree_bytes);
+                    let octree_state: OctreeState = parse_octree_state(&octree_bytes)
+                        .expect("ERROR: Could not decode OCTREE State");
+                    let _read_index = octree_state.read_index;
+                    todo!("OCTREE WIP...");
+                }
                 _ => {
                     todo!("VDF compression {compression_used:?} not handled yet!");
                 }
@@ -1245,6 +1278,67 @@ pub mod mod_vlsv_reader {
             });
             Some(out)
         }
+    }
+
+    #[derive(Debug, Clone)]
+    struct OctreeState {
+        blocks_to_ignore: Vec<u32>,
+        bbox_shape: [usize; 3],
+        bbox_lims: [f32; 6],
+        read_index: usize,
+    }
+
+    fn parse_octree_state(octree_state: &[u8]) -> Option<OctreeState> {
+        fn read_f32_le(buf: &[u8], idx: &mut usize) -> Option<f32> {
+            let end = *idx + 4;
+            let bytes = buf.get(*idx..end)?;
+            *idx = end;
+            Some(f32::from_le_bytes(bytes.try_into().ok()?))
+        }
+        fn read_array_f32_6(buf: &[u8], idx: &mut usize) -> Option<[f32; 6]> {
+            Some([
+                read_f32_le(buf, idx)?,
+                read_f32_le(buf, idx)?,
+                read_f32_le(buf, idx)?,
+                read_f32_le(buf, idx)?,
+                read_f32_le(buf, idx)?,
+                read_f32_le(buf, idx)?,
+            ])
+        }
+        fn read_usize_le(buf: &[u8], idx: &mut usize) -> Option<usize> {
+            let end = *idx + 8;
+            let bytes = buf.get(*idx..end)?;
+            *idx = end;
+            Some(u64::from_le_bytes(bytes.try_into().ok()?) as usize)
+        }
+        fn read_u32_le(buf: &[u8], idx: &mut usize) -> Option<u32> {
+            let end = *idx + 4;
+            let bytes = buf.get(*idx..end)?;
+            *idx = end;
+            Some(u32::from_le_bytes(bytes.try_into().ok()?))
+        }
+        fn read_array_usize_3(buf: &[u8], idx: &mut usize) -> Option<[usize; 3]> {
+            Some([
+                read_usize_le(buf, idx)?,
+                read_usize_le(buf, idx)?,
+                read_usize_le(buf, idx)?,
+            ])
+        }
+        let mut read_index = 0;
+        let n_ignored_blocks = read_usize_le(octree_state, &mut read_index)?;
+        let mut blocks_to_ignore = Vec::with_capacity(n_ignored_blocks);
+        for _ in 0..n_ignored_blocks {
+            blocks_to_ignore.push(read_u32_le(octree_state, &mut read_index)?);
+        }
+        let bbox_shape = read_array_usize_3(octree_state, &mut read_index)?;
+        let bbox_lims = read_array_f32_6(octree_state, &mut read_index)?;
+
+        Some(OctreeState {
+            blocks_to_ignore,
+            bbox_shape,
+            bbox_lims,
+            read_index,
+        })
     }
 
     pub fn zfp_decompress_1d_f32(bytes: &[u8], nx: usize, sparse: f64) -> Result<Vec<f32>, String> {
