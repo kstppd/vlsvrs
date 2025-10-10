@@ -327,7 +327,7 @@ pub mod mod_vlsv_reader {
             let type_on_disk = info.datatype;
             let type_of_t = T::data_type();
             //T=>T
-            if type_on_disk == type_of_t && info.datasize == std::mem::size_of::<T>() {
+            if type_on_disk == type_of_t || info.datasize == std::mem::size_of::<T>() {
                 dst_bytes.copy_from_slice(src_bytes);
                 return;
             }
@@ -404,19 +404,7 @@ pub mod mod_vlsv_reader {
         }
 
         pub fn get_wid(&self, pop: &str) -> Option<usize> {
-            let wid = {
-                let dataset: VlsvDataset = self
-                    .root()
-                    .blockvariable
-                    .as_ref()?
-                    .iter()
-                    .find(|s| s.name.as_ref().unwrap() == pop)
-                    .expect("Population {pop} not found in file!")
-                    .try_into()
-                    .ok()?;
-                (dataset.vectorsize as f64).cbrt()
-            };
-            Some(wid as usize)
+            Some(self.read_scalar_parameter("velocity_block_width").unwrap() as usize)
         }
 
         pub fn get_all_populations(&self) -> Option<Vec<&str>> {
@@ -898,14 +886,61 @@ pub mod mod_vlsv_reader {
                 sub
             }
 
-            // Read block data (T)
             let mut block_ids: Vec<u32> = vec![0; read_size * blockids.vectorsize];
             let blockids_slice = slice_ds(&blockids, start_block, read_size);
             self.read_variable_into::<u32>(None, Some(blockids_slice), &mut block_ids);
 
-            let mut blocks: Vec<T> = vec![T::default(); read_size * blockvariable.vectorsize];
-            let blockvar_slice = slice_ds(&blockvariable, start_block, read_size);
-            self.read_variable_into::<T>(None, Some(blockvar_slice), &mut blocks);
+            // Read block data (T)
+            let vsamples = read_size * wid3;
+            let mut blocks: Vec<T> = vec![];
+            let compression_used = &blockvariable.compression;
+            if let Some(c) = compression_used {
+                match c {
+                    CompressionMethod::NONE => {
+                        let blockvar_slice = slice_ds(&blockvariable, start_block, read_size);
+                        blocks.resize(vsamples, T::default());
+                        self.read_variable_into::<T>(None, Some(blockvar_slice), &mut blocks);
+                    }
+                    CompressionMethod::ZFP => {
+                        let vdf_byte_size =
+                            self.read_scalar_parameter("VDF_BYTE_SIZE").unwrap() as usize;
+                        if vdf_byte_size != std::mem::size_of::<T>() {
+                            panic!(
+                                "This reader will not work for this combo of T and compressed VDF BYTE SIZE"
+                            );
+                        }
+                        let bytespercell = TryInto::<VlsvDataset>::try_into(
+                            self.root()
+                                .bytespercell
+                                .as_ref()?
+                                .iter()
+                                .find(|v| v.name.as_deref() == Some(pop))?,
+                        )
+                        .ok()?;
+                        let mut bytes_per_cell: Vec<u64> = vec![0; bytespercell.arraysize];
+                        self.read_variable_into::<u64>(
+                            None,
+                            Some(bytespercell),
+                            &mut bytes_per_cell,
+                        );
+                        let zindex = cids_with_blocks.iter().position(|&v| v == cid)?;
+                        let zread_size = bytes_per_cell[zindex] as usize;
+                        let zstart_block = bytes_per_cell[..zindex]
+                            .iter()
+                            .map(|&x| x as usize)
+                            .sum::<usize>();
+                        let mut zblocks: Vec<u8> = vec![0_u8; zread_size];
+                        let zblockvar_slice = slice_ds(&blockvariable, zstart_block, zread_size);
+                        self.read_variable_into::<u8>(None, Some(zblockvar_slice), &mut zblocks);
+                        let retval = zfp_decompress_1d_f32(&zblocks, vsamples, 1e-15).unwrap();
+                        blocks.resize(retval.len(), T::zeroed());
+                        blocks.copy_from_slice(bytemuck::cast_slice(retval.as_slice()));
+                    }
+                    _ => {
+                        todo!("VDF compression {c:?} not handled yet!");
+                    }
+                }
+            }
 
             let id2ijk = |id: usize| -> (usize, usize, usize) {
                 let plane = mx * my;
@@ -1183,6 +1218,78 @@ pub mod mod_vlsv_reader {
         }
     }
 
+    pub fn zfp_decompress_1d_f32(bytes: &[u8], nx: usize, sparse: f64) -> Result<Vec<f32>, String> {
+        use std::os::raw::c_void;
+        use zfp_sys::*;
+        if bytes.is_empty() {
+            return Err("ERROR: no bytes to decompress".into());
+        }
+        let stream = unsafe { stream_open(bytes.as_ptr() as *mut c_void, bytes.len()) };
+        if stream.is_null() {
+            return Err("ERROR: failed to open ZFP stream".into());
+        }
+
+        let zfp = unsafe { zfp_stream_open(stream) };
+        unsafe { zfp_stream_set_accuracy(zfp, sparse) };
+        let mut out = vec![0f32; nx];
+        let field = unsafe {
+            zfp_field_1d(
+                out.as_mut_ptr() as *mut c_void,
+                zfp_type_zfp_type_float,
+                nx as usize,
+            )
+        };
+        if field.is_null() {
+            unsafe { zfp_stream_close(zfp) };
+            unsafe { stream_close(stream) };
+            return Err("ERROR: ZFP failed to init array".into());
+        }
+
+        let _ = unsafe {
+            zfp_decompress(zfp, field);
+            zfp_field_free(field);
+            zfp_stream_close(zfp);
+            stream_close(stream)
+        };
+        Ok(out)
+    }
+
+    pub fn zfp_decompress_1d_f64(bytes: &[u8], nx: usize, sparse: f64) -> Result<Vec<f64>, String> {
+        use std::os::raw::c_void;
+        use zfp_sys::*;
+        if bytes.is_empty() {
+            return Err("ERROR: no bytes to decompress".into());
+        }
+        let stream = unsafe { stream_open(bytes.as_ptr() as *mut c_void, bytes.len()) };
+        if stream.is_null() {
+            return Err("ERROR: failed to open ZFP stream".into());
+        }
+
+        let zfp = unsafe { zfp_stream_open(stream) };
+        unsafe { zfp_stream_set_accuracy(zfp, sparse) };
+        let mut out = vec![0f64; nx];
+        let field = unsafe {
+            zfp_field_1d(
+                out.as_mut_ptr() as *mut c_void,
+                zfp_type_zfp_type_double,
+                nx as usize,
+            )
+        };
+        if field.is_null() {
+            unsafe { zfp_stream_close(zfp) };
+            unsafe { stream_close(stream) };
+            return Err("ERROR: ZFP failed to init array".into());
+        }
+
+        let _ = unsafe {
+            zfp_decompress(zfp, field);
+            zfp_field_free(field);
+            zfp_stream_close(zfp);
+            stream_close(stream)
+        };
+        Ok(out)
+    }
+
     //Galloping on top of cellids hints
     #[inline(always)]
     fn find_near_with_hint(cell_ids: &[u64], target: u64, hint: usize) -> Option<usize> {
@@ -1317,6 +1424,7 @@ pub mod mod_vlsv_reader {
             let mesh_str = attrs.get("mesh").map(|s| s.to_string());
             let name_str = attrs.get("name").map(|s| s.to_string());
             let vectorsize = attrs.get("vectorsize").map(|s| s.to_string());
+            let compression = attrs.get("compression").map(|s| s.to_string());
             let max_refinement_level = attrs.get("max_refinement_level").map(|s| s.to_string());
             let offset = inner_text.map(|s| s.trim().to_string());
 
@@ -1327,6 +1435,7 @@ pub mod mod_vlsv_reader {
                 mesh: mesh_str,
                 name: name_str.or_else(|| Some(tag.to_string())),
                 vectorsize,
+                compression,
                 max_refinement_level,
                 unit: attrs.get("unit").map(|s| s.to_string()),
                 unit_conversion: attrs.get("unitConversion").map(|s| s.to_string()),
@@ -1657,6 +1766,8 @@ pub mod mod_vlsv_reader {
         pub name: Option<String>,
         #[serde(rename = "vectorsize")]
         pub vectorsize: Option<String>,
+        #[serde(rename = "compression")]
+        pub compression: Option<String>,
         #[serde(rename = "max_refinement_level")]
         pub max_refinement_level: Option<String>,
         #[serde(rename = "unit")]
@@ -1684,6 +1795,9 @@ pub mod mod_vlsv_reader {
 
         #[serde(rename = "BLOCKSPERCELL")]
         pub blockspercell: Option<Vec<Variable>>,
+
+        #[serde(rename = "BYTESPERCELL")]
+        pub bytespercell: Option<Vec<Variable>>,
 
         #[serde(rename = "BLOCKVARIABLE")]
         pub blockvariable: Option<Vec<Variable>>,
@@ -1767,6 +1881,13 @@ pub mod mod_vlsv_reader {
                     .parse::<DataType>()
                     .map_err(|e| e.to_string())?,
                 grid: g,
+                compression: Some(
+                    var.compression
+                        .as_deref()
+                        .unwrap_or("NONE")
+                        .parse::<CompressionMethod>()
+                        .map_err(|e| format!("Invalid datasize: {e}"))?,
+                ),
             })
         }
     }
@@ -1816,6 +1937,13 @@ pub mod mod_vlsv_reader {
                     .parse::<DataType>()
                     .map_err(|e| e.to_string())?,
                 grid: g,
+                compression: Some(
+                    var.compression
+                        .as_deref()
+                        .unwrap_or("NONE")
+                        .parse::<CompressionMethod>()
+                        .map_err(|e| format!("Invalid datasize: {e}"))?,
+                ),
             })
         }
     }
@@ -1861,6 +1989,29 @@ pub mod mod_vlsv_reader {
         }
     }
 
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum CompressionMethod {
+        NONE,
+        ZFP,
+        OCTREE,
+        MLP,
+        MLPMULTI,
+    }
+
+    impl std::str::FromStr for CompressionMethod {
+        type Err = String;
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            match s {
+                "" | "NONE" => Ok(CompressionMethod::NONE),
+                "ZFP" => Ok(CompressionMethod::ZFP),
+                "OCTREE" => Ok(CompressionMethod::OCTREE),
+                "MLP" => Ok(CompressionMethod::MLP),
+                "MLPMULTI" => Ok(CompressionMethod::MLPMULTI),
+                other => Err(format!("Unknown compression scheme: {other}")),
+            }
+        }
+    }
+
     #[derive(Debug, Clone)]
     pub struct VlsvDataset {
         pub offset: usize,
@@ -1869,6 +2020,7 @@ pub mod mod_vlsv_reader {
         pub datasize: usize,
         pub datatype: DataType,
         grid: Option<VlasiatorGrid>,
+        pub compression: Option<CompressionMethod>,
     }
 
     pub trait TypeTag {
