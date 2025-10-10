@@ -844,15 +844,6 @@ pub mod mod_vlsv_reader {
             )
             .ok()?;
 
-            let blockids = TryInto::<VlsvDataset>::try_into(
-                self.root()
-                    .blockids
-                    .as_ref()?
-                    .iter()
-                    .find(|v| v.name.as_deref() == Some(pop))?,
-            )
-            .ok()?;
-
             let blockvariable = TryInto::<VlsvDataset>::try_into(
                 self.root()
                     .blockvariable
@@ -886,62 +877,6 @@ pub mod mod_vlsv_reader {
                 sub
             }
 
-            let mut block_ids: Vec<u32> = vec![0; read_size * blockids.vectorsize];
-            let blockids_slice = slice_ds(&blockids, start_block, read_size);
-            self.read_variable_into::<u32>(None, Some(blockids_slice), &mut block_ids);
-
-            // Read block data (T)
-            let vsamples = read_size * wid3;
-            let mut blocks: Vec<T> = vec![];
-            let compression_used = &blockvariable.compression;
-            if let Some(c) = compression_used {
-                match c {
-                    CompressionMethod::NONE => {
-                        let blockvar_slice = slice_ds(&blockvariable, start_block, read_size);
-                        blocks.resize(vsamples, T::default());
-                        self.read_variable_into::<T>(None, Some(blockvar_slice), &mut blocks);
-                    }
-                    CompressionMethod::ZFP => {
-                        let vdf_byte_size =
-                            self.read_scalar_parameter("VDF_BYTE_SIZE").unwrap() as usize;
-                        if vdf_byte_size != std::mem::size_of::<T>() {
-                            panic!(
-                                "This reader will not work for this combo of T and compressed VDF BYTE SIZE"
-                            );
-                        }
-                        let bytespercell = TryInto::<VlsvDataset>::try_into(
-                            self.root()
-                                .bytespercell
-                                .as_ref()?
-                                .iter()
-                                .find(|v| v.name.as_deref() == Some(pop))?,
-                        )
-                        .ok()?;
-                        let mut bytes_per_cell: Vec<u64> = vec![0; bytespercell.arraysize];
-                        self.read_variable_into::<u64>(
-                            None,
-                            Some(bytespercell),
-                            &mut bytes_per_cell,
-                        );
-                        let zindex = cids_with_blocks.iter().position(|&v| v == cid)?;
-                        let zread_size = bytes_per_cell[zindex] as usize;
-                        let zstart_block = bytes_per_cell[..zindex]
-                            .iter()
-                            .map(|&x| x as usize)
-                            .sum::<usize>();
-                        let mut zblocks: Vec<u8> = vec![0_u8; zread_size];
-                        let zblockvar_slice = slice_ds(&blockvariable, zstart_block, zread_size);
-                        self.read_variable_into::<u8>(None, Some(zblockvar_slice), &mut zblocks);
-                        let retval = zfp_decompress_1d_f32(&zblocks, vsamples, 1e-15).unwrap();
-                        blocks.resize(retval.len(), T::zeroed());
-                        blocks.copy_from_slice(bytemuck::cast_slice(retval.as_slice()));
-                    }
-                    _ => {
-                        todo!("VDF compression {c:?} not handled yet!");
-                    }
-                }
-            }
-
             let id2ijk = |id: usize| -> (usize, usize, usize) {
                 let plane = mx * my;
                 debug_assert!(id < plane * mz, "GID out of bounds");
@@ -952,25 +887,119 @@ pub mod mod_vlsv_reader {
                 (i, j, k)
             };
 
-            let mut vdf = Array4::<T>::zeros((nvx, nvy, nvz, 1));
-            for (block_idx, &bid_u32) in block_ids.iter().enumerate() {
-                let bid = bid_u32 as usize;
-                let (bi, bj, bk) = id2ijk(bid);
-                let block_buf = &blocks[block_idx * wid3..(block_idx + 1) * wid3];
+            // Read block data (T)
+            let vsamples = read_size * wid3;
+            let mut blocks: Vec<T> = vec![];
+            let compression_used = &blockvariable
+                .compression
+                .clone()
+                .unwrap_or(CompressionMethod::NONE);
 
-                for dk in 0..wid {
-                    for dj in 0..wid {
-                        for di in 0..wid {
-                            let local_id = di + dj * wid + dk * wid * wid;
-                            let gi = bi * wid + di;
-                            let gj = bj * wid + dj;
-                            let gk = bk * wid + dk;
-                            vdf[(gi, gj, gk, 0)] = block_buf[local_id];
+            match compression_used {
+                CompressionMethod::NONE => {
+                    let blockids = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .blockids
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+
+                    let mut block_ids: Vec<u32> = vec![0; read_size * blockids.vectorsize];
+                    let blockids_slice = slice_ds(&blockids, start_block, read_size);
+                    self.read_variable_into::<u32>(None, Some(blockids_slice), &mut block_ids);
+
+                    let blockvar_slice = slice_ds(&blockvariable, start_block, read_size);
+                    blocks.resize(vsamples, T::default());
+                    self.read_variable_into::<T>(None, Some(blockvar_slice), &mut blocks);
+                    let mut vdf = Array4::<T>::zeros((nvx, nvy, nvz, 1));
+                    for (block_idx, &bid_u32) in block_ids.iter().enumerate() {
+                        let bid = bid_u32 as usize;
+                        let (bi, bj, bk) = id2ijk(bid);
+                        let block_buf = &blocks[block_idx * wid3..(block_idx + 1) * wid3];
+
+                        for dk in 0..wid {
+                            for dj in 0..wid {
+                                for di in 0..wid {
+                                    let local_id = di + dj * wid + dk * wid * wid;
+                                    let gi = bi * wid + di;
+                                    let gj = bj * wid + dj;
+                                    let gk = bk * wid + dk;
+                                    vdf[(gi, gj, gk, 0)] = block_buf[local_id];
+                                }
+                            }
                         }
                     }
+                    Some(vdf)
+                }
+                CompressionMethod::ZFP => {
+                    let vdf_byte_size =
+                        self.read_scalar_parameter("VDF_BYTE_SIZE").unwrap() as usize;
+                    if vdf_byte_size != std::mem::size_of::<T>() {
+                        panic!(
+                            "This reader will not work for this combo of T and compressed VDF BYTE SIZE"
+                        );
+                    }
+                    let blockids = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .blockids
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+
+                    let mut block_ids: Vec<u32> = vec![0; read_size * blockids.vectorsize];
+                    let blockids_slice = slice_ds(&blockids, start_block, read_size);
+                    self.read_variable_into::<u32>(None, Some(blockids_slice), &mut block_ids);
+
+                    let bytespercell = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .bytespercell
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+                    let mut bytes_per_cell: Vec<u64> = vec![0; bytespercell.arraysize];
+                    self.read_variable_into::<u64>(None, Some(bytespercell), &mut bytes_per_cell);
+                    let zindex = cids_with_blocks.iter().position(|&v| v == cid)?;
+                    let zread_size = bytes_per_cell[zindex] as usize;
+                    let zstart_block = bytes_per_cell[..zindex]
+                        .iter()
+                        .map(|&x| x as usize)
+                        .sum::<usize>();
+                    let mut zblocks: Vec<u8> = vec![0_u8; zread_size];
+                    let zblockvar_slice = slice_ds(&blockvariable, zstart_block, zread_size);
+                    self.read_variable_into::<u8>(None, Some(zblockvar_slice), &mut zblocks);
+                    let retval = zfp_decompress_1d_f32(&zblocks, vsamples, 1e-15).unwrap();
+                    blocks.resize(retval.len(), T::zeroed());
+                    blocks.copy_from_slice(bytemuck::cast_slice(retval.as_slice()));
+                    let mut vdf = Array4::<T>::zeros((nvx, nvy, nvz, 1));
+                    for (block_idx, &bid_u32) in block_ids.iter().enumerate() {
+                        let bid = bid_u32 as usize;
+                        let (bi, bj, bk) = id2ijk(bid);
+                        let block_buf = &blocks[block_idx * wid3..(block_idx + 1) * wid3];
+
+                        for dk in 0..wid {
+                            for dj in 0..wid {
+                                for di in 0..wid {
+                                    let local_id = di + dj * wid + dk * wid * wid;
+                                    let gi = bi * wid + di;
+                                    let gj = bj * wid + dj;
+                                    let gk = bk * wid + dk;
+                                    vdf[(gi, gj, gk, 0)] = block_buf[local_id];
+                                }
+                            }
+                        }
+                    }
+                    Some(vdf)
+                }
+                _ => {
+                    todo!("VDF compression {compression_used:?} not handled yet!");
                 }
             }
-            Some(vdf)
         }
 
         pub fn read_vdf_into<T>(
