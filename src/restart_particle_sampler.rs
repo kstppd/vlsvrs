@@ -62,7 +62,7 @@ fn main() {
     let dvx = (vxmax - vxmin) / nvx as f64;
     let dvy = (vymax - vymin) / nvy as f64;
     let dvz = (vzmax - vzmin) / nvz as f64;
-    let pb = ProgressBar::new((ncells * PPC).try_into().unwrap());
+    let pb = ProgressBar::new(((ncells / STRIDE) * PPC).try_into().unwrap());
     pb.set_style(
         ProgressStyle::with_template(
             "[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
