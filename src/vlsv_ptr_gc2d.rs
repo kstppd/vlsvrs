@@ -2,7 +2,6 @@
 #![allow(non_snake_case)]
 mod vlsv_reader;
 use crate::mod_vlsv_tracing::*;
-use crate::physical_constants::f64::*;
 use crate::vlsv_reader::*;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;

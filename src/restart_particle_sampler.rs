@@ -15,6 +15,12 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::io::Write;
 
+pub enum SAMPLING {
+    IN,
+    OUT,
+    FULL,
+}
+
 //Some configuration params
 const INIT_TIME: f32 = 305.0;
 const PPC: usize = 1024;
@@ -29,6 +35,9 @@ const YMIN: f64 = -10.0;
 const YMAX: f64 = 1000.0;
 const ZMIN: f64 = -1000.0;
 const ZMAX: f64 = 1000.0;
+const SAMPLE_SCHEME: SAMPLING = SAMPLING::IN;
+const THERMAL_RADIOUS: f64 = 550.0;
+const VDF_SHIFT: bool = true;
 
 struct Particle {
     x: f32,
@@ -71,7 +80,7 @@ fn main() {
         .progress_chars("##-"),
     );
 
-    let particles: Vec<Particle> = (1..=ncells)
+    let particles: Vec<Option<Particle>> = (1..=ncells)
         .into_par_iter()
         .filter(|&cid| (cid - 1) % STRIDE == 0)
         .flat_map(|cid| {
@@ -90,7 +99,7 @@ fn main() {
             let z = coords[2] / RE;
             let is_in_box = x > XMIN && x < XMAX && y > YMIN && y < YMAX && z > ZMIN && z < ZMAX;
             if !is_in_box {
-                return Vec::<Particle>::new();
+                return Vec::<Option<Particle>>::new();
             }
 
             let vdf = f
@@ -111,8 +120,11 @@ fn main() {
             }
 
             if sum <= 0.0 {
-                return Vec::<Particle>::new();
+                return Vec::<Option<Particle>>::new();
             }
+            let vg_v = f
+                .read_vg_variable_at::<f64>("vg_v", None, &[cid])
+                .expect("Could not read vg_v from {f}");
             let dist = WeightedIndex::new(&weights).unwrap();
             (0..PPC)
                 .map(|_| {
@@ -125,31 +137,79 @@ fn main() {
                     let j = rem / nvx;
                     let i = rem % nvx;
                     let mut urand = || -> f64 { rng.random::<f64>() - 0.5 };
-                    let vx = vxmin + (i as f64 + 0.5 + urand()) * dvx;
-                    let vy = vymin + (j as f64 + 0.5 + urand()) * dvy;
-                    let vz = vzmin + (k as f64 + 0.5 + urand()) * dvz;
-
-                    Particle {
-                        x: coords[0] as f32,
-                        y: coords[1] as f32,
-                        z: coords[2] as f32,
-                        vx: vx as f32,
-                        vy: vy as f32,
-                        vz: vz as f32,
-                    }
+                    let (vx, vy, vz) = if VDF_SHIFT {
+                        (
+                            vxmin + (i as f64 + 0.5 + urand()) * dvx - vg_v[0],
+                            vymin + (j as f64 + 0.5 + urand()) * dvy - vg_v[1],
+                            vzmin + (k as f64 + 0.5 + urand()) * dvz - vg_v[2],
+                        )
+                    } else {
+                        (
+                            vxmin + (i as f64 + 0.5 + urand()) * dvx,
+                            vymin + (j as f64 + 0.5 + urand()) * dvy,
+                            vzmin + (k as f64 + 0.5 + urand()) * dvz,
+                        )
+                    };
+                    let thermal_circle_dist: f64 = if !VDF_SHIFT {
+                        ((vx - vg_v[0]).powi(2) + (vy - vg_v[1]).powi(2) + (vz - vg_v[2]).powi(2))
+                            .sqrt()
+                    } else {
+                        (vx.powi(2) + vy.powi(2) + vz.powi(2)).sqrt()
+                    };
+                    let retval = match SAMPLE_SCHEME {
+                        SAMPLING::IN => {
+                            if THERMAL_RADIOUS > thermal_circle_dist {
+                                Some(Particle {
+                                    x: coords[0] as f32,
+                                    y: coords[1] as f32,
+                                    z: coords[2] as f32,
+                                    vx: vx as f32,
+                                    vy: vy as f32,
+                                    vz: vz as f32,
+                                })
+                            } else {
+                                None
+                            }
+                        }
+                        SAMPLING::OUT => {
+                            if THERMAL_RADIOUS < thermal_circle_dist {
+                                Some(Particle {
+                                    x: coords[0] as f32,
+                                    y: coords[1] as f32,
+                                    z: coords[2] as f32,
+                                    vx: vx as f32,
+                                    vy: vy as f32,
+                                    vz: vz as f32,
+                                })
+                            } else {
+                                None
+                            }
+                        }
+                        SAMPLING::FULL => Some(Particle {
+                            x: coords[0] as f32,
+                            y: coords[1] as f32,
+                            z: coords[2] as f32,
+                            vx: vx as f32,
+                            vy: vy as f32,
+                            vz: vz as f32,
+                        }),
+                    };
+                    retval
                 })
-                .collect::<Vec<Particle>>()
+                .collect::<Vec<Option<Particle>>>()
         })
         .collect();
     println!("Sampled {} particles", particles.len());
     let file = File::create("lucky_particles.txt").expect("Could not open output file");
     let mut writer = BufWriter::new(file);
-    for p in &particles {
-        writeln!(
-            writer,
-            "{},{},{},{},{},{},{}",
-            INIT_TIME, p.x, p.y, p.z, p.vx, p.vy, p.vz
-        )
-        .expect("Could not write the particle file!");
+    for particle in &particles {
+        if let Some(p) = particle {
+            writeln!(
+                writer,
+                "{},{},{},{},{},{},{}",
+                INIT_TIME, p.x, p.y, p.z, p.vx, p.vy, p.vz
+            )
+            .expect("Could not write the particle file!");
+        }
     }
 }
