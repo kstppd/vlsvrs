@@ -37,7 +37,7 @@ const ZMIN: f64 = -1000.0;
 const ZMAX: f64 = 1000.0;
 const SAMPLE_SCHEME: SAMPLING = SAMPLING::IN;
 const THERMAL_RADIOUS: f64 = 550.0;
-const VDF_SHIFT: bool = true;
+const VDF_SHIFT: bool = false;
 
 struct Particle {
     x: f32,
