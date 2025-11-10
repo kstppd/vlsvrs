@@ -2,6 +2,7 @@
 #![allow(non_snake_case)]
 mod vlsv_reader;
 use crate::mod_vlsv_tracing::*;
+use crate::physical_constants::f64::*;
 use crate::vlsv_reader::*;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
@@ -9,7 +10,6 @@ use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
-
 //Configure these
 const TOUT: f64 = 5.0; //output file cadence in seconds
 const TMAX: f64 = 700.0; // run until we hit this
