@@ -937,7 +937,7 @@ pub mod mod_vlsv_reader {
                 CompressionMethod::ZFP | CompressionMethod::MLP | CompressionMethod::OCTREE => {
                     panic!("Compiled without ZFP/OCTREE/MLP support");
                 }
-                #[cfg(not(no_octree))]
+                #[cfg(feature = "zfp")]
                 CompressionMethod::ZFP => {
                     let vdf_byte_size =
                         self.read_scalar_parameter("VDF_BYTE_SIZE").unwrap() as usize;
@@ -1380,6 +1380,7 @@ pub mod mod_vlsv_reader {
         })
     }
 
+    #[cfg(feature = "zfp")]
     pub fn zfp_decompress_1d_f32(bytes: &[u8], nx: usize, sparse: f64) -> Result<Vec<f32>, String> {
         use std::os::raw::c_void;
         use zfp_sys::*;
@@ -1416,6 +1417,7 @@ pub mod mod_vlsv_reader {
         Ok(out)
     }
 
+    #[cfg(feature = "zfp")]
     pub fn zfp_decompress_1d_f64(bytes: &[u8], nx: usize, sparse: f64) -> Result<Vec<f64>, String> {
         use std::os::raw::c_void;
         use zfp_sys::*;
