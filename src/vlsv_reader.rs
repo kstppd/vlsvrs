@@ -404,7 +404,11 @@ pub mod mod_vlsv_reader {
         }
 
         pub fn get_wid(&self, _pop: &str) -> Option<usize> {
-            Some(self.read_scalar_parameter("velocity_block_width").unwrap() as usize)
+            Some(
+                self.read_scalar_parameter("velocity_block_width")
+                    .ok_or(4.0_f64)
+                    .unwrap() as usize,
+            )
         }
 
         pub fn get_all_populations(&self) -> Option<Vec<&str>> {
