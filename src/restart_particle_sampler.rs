@@ -122,9 +122,17 @@ fn main() {
             if sum <= 0.0 {
                 return Vec::<Option<Particle>>::new();
             }
-            let vg_v = f
-                .read_vg_variable_at::<f64>("vg_v", None, &[cid])
-                .expect("Could not read vg_v from {f}");
+            let vg_v_x = f
+                .read_vg_variable_at::<f64>("moments_r", Some(0), &[cid])
+                .expect("Could not read moments");
+            let vg_v_y = f
+                .read_vg_variable_at::<f64>("moments_r", Some(1), &[cid])
+                .expect("Could not read moments");
+            let vg_v_z = f
+                .read_vg_variable_at::<f64>("moments_r", Some(2), &[cid])
+                .expect("Could not read moments");
+            let vg_v = [vg_v_x[0], vg_v_y[0], vg_v_z[0]];
+
             let dist = WeightedIndex::new(&weights).unwrap();
             (0..PPC)
                 .map(|_| {
