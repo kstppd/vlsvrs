@@ -51,7 +51,7 @@ pub fn push_gc_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let args: Vec<String> = env::args().collect();
-    let fields = VlsvDynamicField::<f64>::new(VLSV_DIR);
+    let fields = VlsvDynamicField::<f64>::new(VLSV_DIR, [false, false, false]);
     let mass = physical_constants::f64::PROTON_MASS;
     let charge = physical_constants::f64::PROTON_CHARGE;
     let mut actual_time: f64 = 0.0;

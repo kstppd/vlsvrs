@@ -2373,6 +2373,7 @@ pub mod mod_vlsv_tracing {
         b: Array4<T>,
         e: Array4<T>,
         extents: [T; 6],
+        periodic: [bool; 3],
         ds: T,
     }
 
@@ -2383,7 +2384,7 @@ pub mod mod_vlsv_tracing {
     }
 
     impl<T: PtrTrait> VlsvStaticField<T> {
-        pub fn new(filename: &String) -> Self {
+        pub fn new(filename: &String, periodic: [bool; 3]) -> Self {
             let f = VlsvFile::new(&filename).unwrap();
             let extents: [T; 6] = [
                 T::from(f.read_scalar_parameter("xmin").unwrap()).unwrap(),
@@ -2396,7 +2397,13 @@ pub mod mod_vlsv_tracing {
             let b = f.read_variable::<T>("vg_b_vol", None).unwrap();
             let e = f.read_variable::<T>("vg_e_vol", None).unwrap();
             let ds = (extents[3] - extents[0]) / T::from(b.dim().0).unwrap();
-            VlsvStaticField { b, e, extents, ds }
+            VlsvStaticField {
+                b,
+                e,
+                extents,
+                periodic,
+                ds,
+            }
         }
 
         fn real2mesh(&self, x: T, y: T, z: T) -> Option<([usize; 3], [T; 3])> {
@@ -2444,10 +2451,27 @@ pub mod mod_vlsv_tracing {
         }
 
         // https://en.wikipedia.org/wiki/Trilinear_interpolation#Formulation
-        fn trilerp(&self, grid_point: [usize; 3], weights: [T; 3], field: &Array4<T>) -> [T; 3] {
-            let [x0, y0, z0] = grid_point;
+        fn trilerp(
+            &self,
+            grid_point: [usize; 3],
+            weights: [T; 3],
+            field: &Array4<T>,
+            periodic: [bool; 3],
+        ) -> [T; 3] {
+            let [mut x0, mut y0, mut z0] = grid_point;
             let [xd, yd, zd] = weights;
             let (nx, ny, nz, _) = field.dim();
+
+            //Handle boundary condition for periodic dims
+            if periodic[0] && x0 + 1 > nx {
+                x0 = x0 % nx;
+            }
+            if periodic[1] && y0 + 1 > ny {
+                y0 = y0 % ny;
+            }
+            if periodic[2] && z0 + 1 > nz {
+                z0 = z0 % nz;
+            }
 
             fn lerp<T: Float>(a: &ArrayView1<T>, b: &ArrayView1<T>, t: T) -> [T; 3] {
                 [
@@ -2518,7 +2542,7 @@ pub mod mod_vlsv_tracing {
     }
 
     impl<T: PtrTrait> VlsvDynamicField<T> {
-        pub fn new(dir: &str) -> Self {
+        pub fn new(dir: &str, periodic: [bool; 3]) -> Self {
             use indicatif::{ProgressBar, ProgressStyle};
             use rayon::prelude::*;
             use std::fs;
@@ -2553,7 +2577,7 @@ pub mod mod_vlsv_tracing {
                 .map(|filename| {
                     let f = VlsvFile::new(&filename).unwrap();
                     let t: T = T::from(f.read_scalar_parameter("time").unwrap()).unwrap();
-                    let fields = VlsvStaticField::new(filename);
+                    let fields = VlsvStaticField::new(filename, periodic);
                     pb.inc(1);
                     (t, fields)
                 })
@@ -2641,8 +2665,8 @@ pub mod mod_vlsv_tracing {
     impl<T: PtrTrait> Field<T> for VlsvStaticField<T> {
         fn get_fields_at(&self, _time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
             let (grid_point, weights) = self.real2mesh(x, y, z)?;
-            let e_field = self.trilerp(grid_point, weights, &self.e);
-            let b_field = self.trilerp(grid_point, weights, &self.b);
+            let e_field = self.trilerp(grid_point, weights, &self.e, self.periodic);
+            let b_field = self.trilerp(grid_point, weights, &self.b, self.periodic);
             Some([
                 b_field[0], b_field[1], b_field[2], e_field[0], e_field[1], e_field[2],
             ])
