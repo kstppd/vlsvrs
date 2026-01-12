@@ -326,8 +326,11 @@ pub mod mod_vlsv_reader {
             */
             let type_on_disk = info.datatype;
             let type_of_t = T::data_type();
+            let types_match = type_on_disk == type_of_t;
+            let sizes_match = info.datasize == std::mem::size_of::<T>();
+            let is_compressed = info.compression != Some(CompressionMethod::NONE);
             //T=>T
-            if type_on_disk == type_of_t || info.datasize == std::mem::size_of::<T>() {
+            if (types_match && sizes_match) || ((types_match || sizes_match) && is_compressed) {
                 dst_bytes.copy_from_slice(src_bytes);
                 return;
             }
