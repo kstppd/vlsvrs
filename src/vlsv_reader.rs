@@ -2409,72 +2409,52 @@ pub mod mod_vlsv_tracing {
             }
         }
 
-        fn real2mesh(&self, x: T, y: T, z: T) -> Option<([usize; 3], [T; 3])> {
-            if x < self.extents[0]
-                || x > self.extents[3]
-                || y < self.extents[1]
-                || y > self.extents[4]
-                || z < self.extents[2]
-                || z > self.extents[5]
-            {
-                // eprintln!(
-                //     "ERROR: Tried to probe fields outside mesh at location [{:?},{:?},{:?}]. Mesh extents are {:?}!",
-                //     x, y, z, self.extents
-                // );
-                return None;
+        fn real2mesh(&self, x: T, y: T, z: T, periodic: [bool; 3]) -> Option<([usize; 3], [T; 3])> {
+            let dims = self.e.dim();
+            let coords = [x, y, z];
+            let mut normalized = [T::zero(); 3];
+            let grid_dims = [dims.0, dims.1, dims.2];
+
+            for i in 0..3 {
+                let size = T::from(grid_dims[i]).unwrap() * self.ds;
+                let mut val = coords[i] - self.extents[i];
+                if periodic[i] {
+                    val = ((val % size) + size) % size;
+                }
+
+                normalized[i] = val / self.ds;
             }
 
-            let dims = self.e.dim();
-            let x_norm = (x - self.extents[0]) / self.ds;
-            let y_norm = (y - self.extents[1]) / self.ds;
-            let z_norm = (z - self.extents[2]) / self.ds;
-            let x0 = x_norm.floor().to_usize()?;
-            let y0 = y_norm.floor().to_usize()?;
-            let z0 = z_norm.floor().to_usize()?;
-            let x0 = if dims.0 > 1 { x0.min(dims.0 - 2) } else { 0 };
-            let y0 = if dims.1 > 1 { y0.min(dims.1 - 2) } else { 0 };
-            let z0 = if dims.2 > 1 { z0.min(dims.2 - 2) } else { 0 };
+            let (x_norm, y_norm, z_norm) = (normalized[0], normalized[1], normalized[2]);
 
-            let xd = if dims.0 > 1 {
-                x_norm - T::from(x0).unwrap()
-            } else {
-                T::zero()
+            let mut x0 = x_norm.floor().to_usize().unwrap();
+            let mut y0 = y_norm.floor().to_usize().unwrap();
+            let mut z0 = z_norm.floor().to_usize().unwrap();
+
+            let handle_dim = |idx: &mut usize, norm: T, dim: usize, is_periodic: bool| {
+                if dim > 1 {
+                    if is_periodic {
+                        *idx %= dim;
+                    } else {
+                        *idx = (*idx).min(dim - 2);
+                    }
+                    norm - T::from(*idx).unwrap()
+                } else {
+                    T::zero()
+                }
             };
-            let yd = if dims.1 > 1 {
-                y_norm - T::from(y0).unwrap()
-            } else {
-                T::zero()
-            };
-            let zd = if dims.2 > 1 {
-                z_norm - T::from(z0).unwrap()
-            } else {
-                T::zero()
-            };
+
+            let xd = handle_dim(&mut x0, x_norm, dims.0, periodic[0]);
+            let yd = handle_dim(&mut y0, y_norm, dims.1, periodic[1]);
+            let zd = handle_dim(&mut z0, z_norm, dims.2, periodic[2]);
             Some(([x0, y0, z0], [xd, yd, zd]))
         }
 
         // https://en.wikipedia.org/wiki/Trilinear_interpolation#Formulation
-        fn trilerp(
-            &self,
-            grid_point: [usize; 3],
-            weights: [T; 3],
-            field: &Array4<T>,
-            periodic: [bool; 3],
-        ) -> [T; 3] {
-            let [mut x0, mut y0, mut z0] = grid_point;
+        fn trilerp(&self, grid_point: [usize; 3], weights: [T; 3], field: &Array4<T>) -> [T; 3] {
+            let [x0, y0, z0] = grid_point;
             let [xd, yd, zd] = weights;
             let (nx, ny, nz, _) = field.dim();
-
-            //Handle boundary condition for periodic dims
-            if periodic[0] && x0 + 1 > nx {
-                x0 = x0 % nx;
-            }
-            if periodic[1] && y0 + 1 > ny {
-                y0 = y0 % ny;
-            }
-            if periodic[2] && z0 + 1 > nz {
-                z0 = z0 % nz;
-            }
 
             fn lerp<T: Float>(a: &ArrayView1<T>, b: &ArrayView1<T>, t: T) -> [T; 3] {
                 [
@@ -2667,9 +2647,9 @@ pub mod mod_vlsv_tracing {
 
     impl<T: PtrTrait> Field<T> for VlsvStaticField<T> {
         fn get_fields_at(&self, _time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
-            let (grid_point, weights) = self.real2mesh(x, y, z)?;
-            let e_field = self.trilerp(grid_point, weights, &self.e, self.periodic);
-            let b_field = self.trilerp(grid_point, weights, &self.b, self.periodic);
+            let (grid_point, weights) = self.real2mesh(x, y, z, self.periodic)?;
+            let e_field = self.trilerp(grid_point, weights, &self.e);
+            let b_field = self.trilerp(grid_point, weights, &self.b);
             Some([
                 b_field[0], b_field[1], b_field[2], e_field[0], e_field[1], e_field[2],
             ])
