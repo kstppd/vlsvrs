@@ -39,6 +39,7 @@ fn print_variables(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
         "Real Space Extents: {:?} [m]",
         f.get_spatial_mesh_extents().unwrap()
     );
+    println!("VDF Compression: {:?}", f.read_compression());
     println!("Max AMR level: {:?}", f.get_max_amr_refinement().unwrap());
     let pops = f.get_all_populations().unwrap();
     println!("Populations: {:?} ", pops);

@@ -231,6 +231,20 @@ pub mod mod_vlsv_reader {
             })
         }
 
+        pub fn read_compression(&self) -> &str {
+            let comrpession = self
+                .read_scalar_parameter("COMPRESSION")
+                .or(Some(4.0))
+                .unwrap() as i32;
+            match comrpession {
+                0 => "MLP",
+                1 => "MLPMULTI",
+                2 => "ZFP",
+                3 => "OCTREE",
+                _ => "None",
+            }
+        }
+
         pub fn read_scalar_parameter(&self, name: &str) -> Option<f64> {
             let info = self.get_dataset(name)?;
             debug_assert!(info.vectorsize == 1);
@@ -940,8 +954,8 @@ pub mod mod_vlsv_reader {
                     Some(vdf)
                 }
                 #[cfg(no_octree)]
-                CompressionMethod::ZFP | CompressionMethod::MLP | CompressionMethod::OCTREE => {
-                    panic!("Compiled without ZFP/OCTREE/MLP support");
+                CompressionMethod::OCTREE => {
+                    panic!("Compiled without OCTREE support");
                 }
                 #[cfg(feature = "zfp")]
                 CompressionMethod::ZFP => {
@@ -984,7 +998,7 @@ pub mod mod_vlsv_reader {
                     let mut zblocks: Vec<u8> = vec![0_u8; zread_size];
                     let zblockvar_slice = slice_ds(&blockvariable, zstart_block, zread_size);
                     self.read_variable_into::<u8>(None, Some(zblockvar_slice), &mut zblocks);
-                    let retval = zfp_decompress_1d_f32(&zblocks, vsamples, 1e-15).unwrap();
+                    let retval = zfp_decompress_1d_f32(&zblocks, vsamples, 1e-16).unwrap();
                     blocks.resize(retval.len(), T::zeroed());
                     blocks.copy_from_slice(bytemuck::cast_slice(retval.as_slice()));
                     let mut vdf = Array4::<T>::zeros((nvx, nvy, nvz, 1));
