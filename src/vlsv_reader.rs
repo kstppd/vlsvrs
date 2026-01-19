@@ -2426,42 +2426,38 @@ pub mod mod_vlsv_tracing {
         fn real2mesh(&self, x: T, y: T, z: T, periodic: [bool; 3]) -> Option<([usize; 3], [T; 3])> {
             let dims = self.e.dim();
             let coords = [x, y, z];
-            let mut normalized = [T::zero(); 3];
             let grid_dims = [dims.0, dims.1, dims.2];
 
+            let mut indices = [0usize; 3];
+            let mut weights = [T::zero(); 3];
+
             for i in 0..3 {
-                let size = T::from(grid_dims[i]).unwrap() * self.ds;
+                let dim = grid_dims[i];
+                let size = T::from(dim).unwrap() * self.ds;
                 let mut val = coords[i] - self.extents[i];
+
                 if periodic[i] {
                     val = ((val % size) + size) % size;
+                } else {
+                    if val < T::zero() || val >= size - self.ds {
+                        return None;
+                    }
                 }
 
-                normalized[i] = val / self.ds;
+                let norm = val / self.ds;
+                let mut idx = norm.floor().to_usize().unwrap();
+                if periodic[i] {
+                    if idx >= dim {
+                        idx = 0;
+                    }
+                    indices[i] = idx;
+                } else {
+                    indices[i] = idx.min(dim - 2);
+                }
+                weights[i] = norm - T::from(indices[i]).unwrap();
             }
 
-            let (x_norm, y_norm, z_norm) = (normalized[0], normalized[1], normalized[2]);
-
-            let mut x0 = x_norm.floor().to_usize().unwrap();
-            let mut y0 = y_norm.floor().to_usize().unwrap();
-            let mut z0 = z_norm.floor().to_usize().unwrap();
-
-            let handle_dim = |idx: &mut usize, norm: T, dim: usize, is_periodic: bool| {
-                if dim > 1 {
-                    if is_periodic {
-                        *idx %= dim;
-                    } else {
-                        *idx = (*idx).min(dim - 2);
-                    }
-                    norm - T::from(*idx).unwrap()
-                } else {
-                    T::zero()
-                }
-            };
-
-            let xd = handle_dim(&mut x0, x_norm, dims.0, periodic[0]);
-            let yd = handle_dim(&mut y0, y_norm, dims.1, periodic[1]);
-            let zd = handle_dim(&mut z0, z_norm, dims.2, periodic[2]);
-            Some(([x0, y0, z0], [xd, yd, zd]))
+            Some((indices, weights))
         }
 
         // https://en.wikipedia.org/wiki/Trilinear_interpolation#Formulation
@@ -3002,7 +2998,7 @@ pub mod mod_vlsv_tracing {
         let denominator = charge.abs() * b_mag;
         numerator / denominator
     }
-    pub fn borris_adaptive<T: PtrTrait, F: Field<T> + std::marker::Sync>(
+    pub fn boris_adaptive<T: PtrTrait, F: Field<T> + std::marker::Sync>(
         p: &mut Particle<T>,
         f: &F,
         dt: &mut T,
@@ -3013,28 +3009,56 @@ pub mod mod_vlsv_tracing {
     ) {
         let mut t = t0;
         while t < t1 {
-            //Do not go over t1
             if t + *dt > t1 {
                 *dt = t1 - t;
             }
 
-            let mut p1 = p.clone();
-            let mut p2 = p.clone();
-            //1st order step
-            let fields = f.get_fields_at(t, p.x, p.y, p.z).unwrap();
-            boris(&mut p1, &fields[3..6], &fields[0..3], *dt, mass, charge);
+            let fields_at_p = match f.get_fields_at(t, p.x, p.y, p.z) {
+                Some(fields) => fields,
+                None => {
+                    p.alive = false;
+                    return;
+                }
+            };
 
-            let fields = f.get_fields_at(t, p.x, p.y, p.z).unwrap();
+            let mut p1 = p.clone();
             boris(
-                &mut p2,
-                &fields[3..6],
-                &fields[0..3],
-                *dt / T::from(2).unwrap(),
+                &mut p1,
+                &fields_at_p[3..6],
+                &fields_at_p[0..3],
+                *dt,
                 mass,
                 charge,
             );
 
-            //Get error
+            let mut p2 = p.clone();
+            boris(
+                &mut p2,
+                &fields_at_p[3..6],
+                &fields_at_p[0..3],
+                *dt / T::from(2.0).unwrap(),
+                mass,
+                charge,
+            );
+
+            let fields_at_p2 =
+                match f.get_fields_at(t + *dt / T::from(2.0).unwrap(), p2.x, p2.y, p2.z) {
+                    Some(fields) => fields,
+                    None => {
+                        p.alive = false;
+                        return;
+                    }
+                };
+
+            boris(
+                &mut p2,
+                &fields_at_p2[3..6],
+                &fields_at_p2[0..3],
+                *dt / T::from(2.0).unwrap(),
+                mass,
+                charge,
+            );
+
             let error = [
                 T::from(100.0).unwrap() * (p2.x - p1.x).abs(),
                 T::from(100.0).unwrap() * (p2.y - p1.y).abs(),
@@ -3044,25 +3068,30 @@ pub mod mod_vlsv_tracing {
             .copied()
             .fold(T::neg_infinity(), T::max);
 
-            //Calc new dt
-            let b = [fields[0], fields[1], fields[2]];
+            let b = [fields_at_p[0], fields_at_p[1], fields_at_p[2]];
             let larmor = larmor_radius(p, &b, mass, charge);
-            let tol = T::from(larmor / T::from(100).unwrap()).unwrap();
+            let tol = T::from(larmor / T::from(100.0).unwrap()).unwrap();
+
             let new_dt = T::from(0.9).unwrap()
                 * *dt
                 * T::min(
                     T::max(
-                        (tol / (T::from(2.0).unwrap() * error)).sqrt(),
+                        (tol / (T::from(2.0).unwrap() * error + T::epsilon())).sqrt(),
                         T::from(0.3).unwrap(),
                     ),
                     T::from(2.0).unwrap(),
                 );
 
-            //Accept step
             if error < tol {
-                *p = p1;
-                t = t + new_dt;
+                *p = p2;
+                t = t + *dt;
                 *dt = new_dt;
+            } else {
+                *dt = new_dt;
+            }
+
+            if !p.alive {
+                break;
             }
         }
     }
@@ -3159,7 +3188,6 @@ pub mod mod_vlsv_tracing {
                 .expect("Failed to write GC state to file!");
         }
     }
-
     pub fn euler_gc_step<T: PtrTrait, F: Field<T>>(
         gc: &GuidingCenter2D<T>,
         f: &F,
@@ -3168,6 +3196,12 @@ pub mod mod_vlsv_tracing {
         charge: T,
         mass: T,
     ) -> GuidingCenter2D<T> {
+        let die = || {
+            let mut dead = gc.clone();
+            dead.alive = false;
+            dead
+        };
+
         let fields_opt = f.get_fields_at(t, gc.x, gc.y, T::zero());
         let (b, e) = match fields_opt {
             Some(fields) => {
@@ -3175,41 +3209,31 @@ pub mod mod_vlsv_tracing {
                 let e = [fields[3], fields[4], fields[5]];
                 (b, e)
             }
-            None => {
-                let mut dead = gc.clone();
-                dead.alive = false;
-                return dead;
-            }
+            None => return die(),
         };
+
         let bmag = mag(b[0], b[1], b[2]);
         if bmag <= T::epsilon() {
-            let mut dead = gc.clone();
-            dead.alive = false;
-            return dead;
+            return die();
         }
 
-        // ExB
+        //ExB
         let inv_b2 = T::one() / (bmag * bmag);
         let v_exb = [
             (e[1] * b[2] - e[2] * b[1]) * inv_b2,
             (e[2] * b[0] - e[0] * b[2]) * inv_b2,
-            (e[0] * b[1] - e[1] * b[0]) * inv_b2,
         ];
 
-        // GradB
-        let delta = f.ds() / T::from(4).unwrap();
+        //GradB
+        let delta = f.ds() / T::from(4.0).unwrap();
         let (bpx, bmx, bpy, bmy) = match (
             f.get_fields_at(t, gc.x + delta, gc.y, T::zero()),
             f.get_fields_at(t, gc.x - delta, gc.y, T::zero()),
             f.get_fields_at(t, gc.x, gc.y + delta, T::zero()),
             f.get_fields_at(t, gc.x, gc.y - delta, T::zero()),
         ) {
-            (Some(bpx), Some(bmx), Some(bpy), Some(bmy)) => (bpx, bmx, bpy, bmy),
-            _ => {
-                let mut dead = gc.clone();
-                dead.alive = false;
-                return dead;
-            }
+            (Some(px), Some(mx), Some(py), Some(my)) => (px, mx, py, my),
+            _ => return die(),
         };
 
         let grad_b = [
@@ -3226,61 +3250,55 @@ pub mod mod_vlsv_tracing {
             (b[0] * grad_b[1] - b[1] * grad_b[0]),
         ];
 
-        // Curvature drift
+        //Curvature
         let b_hat = [b[0] / bmag, b[1] / bmag, b[2] / bmag];
-        let fwd = f
-            .get_fields_at(
+        let (fwd, back) = match (
+            f.get_fields_at(
                 t,
                 gc.x + b_hat[0] * delta,
                 gc.y + b_hat[1] * delta,
                 b_hat[2] * delta,
-            )
-            .unwrap();
-        let back = f
-            .get_fields_at(
+            ),
+            f.get_fields_at(
                 t,
                 gc.x - b_hat[0] * delta,
                 gc.y - b_hat[1] * delta,
                 -b_hat[2] * delta,
-            )
-            .unwrap();
+            ),
+        ) {
+            (Some(f), Some(b)) => (f, b),
+            _ => return die(),
+        };
+
         let db_ds = [
             (fwd[0] - back[0]) / (T::from(2.0).unwrap() * delta),
             (fwd[1] - back[1]) / (T::from(2.0).unwrap() * delta),
             (fwd[2] - back[2]) / (T::from(2.0).unwrap() * delta),
         ];
+
         let b_cross_bgrad = [
             b[1] * db_ds[2] - b[2] * db_ds[1],
             b[2] * db_ds[0] - b[0] * db_ds[2],
             b[0] * db_ds[1] - b[1] * db_ds[0],
         ];
 
-        //Factors
-        let q = charge;
         let mu = gc.mu;
         let vperp = ((T::from(2.0).unwrap() * mu * bmag) / mass).sqrt();
-
         let vpar2 = gc.vpar * gc.vpar;
 
-        let v_gradb_2d = [
-            v_gradb_3d[0] * (mu / (q * bmag * bmag)),
-            v_gradb_3d[1] * (mu / (q * bmag * bmag)),
-        ];
-        let v_curv_2d = [
-            b_cross_bgrad[0] * (mass * vpar2 / (q * bmag * bmag * bmag)),
-            b_cross_bgrad[1] * (mass * vpar2 / (q * bmag * bmag * bmag)),
-        ];
-        let v_exb_2d = [v_exb[0], v_exb[1]];
+        let cb2 = charge * bmag * bmag;
+        let vx = v_exb[0]
+            + v_gradb_3d[0] * (mu / cb2)
+            + b_cross_bgrad[0] * (mass * vpar2 / (cb2 * bmag));
 
-        let vx = v_exb_2d[0] + v_gradb_2d[0] + v_curv_2d[0];
-        let vy = v_exb_2d[1] + v_gradb_2d[1] + v_curv_2d[1];
+        let vy = v_exb[1]
+            + v_gradb_3d[1] * (mu / cb2)
+            + b_cross_bgrad[1] * (mass * vpar2 / (cb2 * bmag));
 
         let mut out = gc.clone();
         out.x = out.x + vx * dt;
         out.y = out.y + vy * dt;
         out.vperp = vperp;
-        // let en = T::from(1e-3).unwrap() * T::from(0.5).unwrap() * mass * vperp * vperp
-        //     / T::from(1.602176634e-19).unwrap();
         out
     }
 
@@ -3293,6 +3311,9 @@ pub mod mod_vlsv_tracing {
         mass: T,
         charge: T,
     ) {
+        if !gc.alive {
+            return;
+        }
         let mut t = t0;
         let min_dt = T::from(1e-5).unwrap();
         const MAX_ITER: usize = 1000000;
