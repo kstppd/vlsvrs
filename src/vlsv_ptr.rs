@@ -32,7 +32,7 @@ pub fn push_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
         };
 
         let mut dt_val = T::from(1e-4).unwrap();
-        borris_adaptive(
+        boris_adaptive(
             &mut particle,
             f,
             &mut dt_val,
