@@ -2386,6 +2386,17 @@ pub mod mod_vlsv_tracing {
         }
     }
 
+    pub struct UniformField<T: PtrTrait> {
+        pub mag: T,
+        pub axis: i32,
+    }
+
+    impl<T: PtrTrait> UniformField<T> {
+        pub fn new(mag: T, axis: i32) -> Self {
+            UniformField { mag, axis }
+        }
+    }
+
     pub struct VlsvStaticField<T: PtrTrait> {
         b: Array4<T>,
         e: Array4<T>,
@@ -2655,6 +2666,42 @@ pub mod mod_vlsv_tracing {
         }
     }
 
+    impl<T: PtrTrait> Field<T> for UniformField<T> {
+        fn get_fields_at(&self, _time: T, _x: T, _y: T, _z: T) -> Option<[T; 6]> {
+            match self.axis {
+                0 => Some([
+                    self.mag,
+                    T::zero(),
+                    T::zero(),
+                    T::zero(),
+                    T::zero(),
+                    T::zero(),
+                ]),
+                1 => Some([
+                    T::zero(),
+                    self.mag,
+                    T::zero(),
+                    T::zero(),
+                    T::zero(),
+                    T::zero(),
+                ]),
+                2 => Some([
+                    T::zero(),
+                    T::zero(),
+                    self.mag,
+                    T::zero(),
+                    T::zero(),
+                    T::zero(),
+                ]),
+                _ => panic!(),
+            }
+        }
+
+        fn ds(&self) -> T {
+            return T::from(DELTA).unwrap();
+        }
+    }
+
     impl<T: PtrTrait> Field<T> for VlsvStaticField<T> {
         fn get_fields_at(&self, _time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
             let (grid_point, weights) = self.real2mesh(x, y, z, self.periodic)?;
@@ -2696,6 +2743,7 @@ pub mod mod_vlsv_tracing {
         term1 / term2
     }
 
+    #[derive(Debug)]
     pub struct ParticlePopulation<T: PtrTrait> {
         pub x: Vec<T>,
         pub y: Vec<T>,
@@ -2936,41 +2984,42 @@ pub mod mod_vlsv_tracing {
         }
     }
     pub fn boris<T: PtrTrait>(p: &mut Particle<T>, e: &[T], b: &[T], dt: T, m: T, c: T) {
-        // println!("b={:?},e={:?}", b, e);
-        // panic!();
         let mut v_minus: [T; 3] = [T::zero(); 3];
         let mut v_prime: [T; 3] = [T::zero(); 3];
         let mut v_plus: [T; 3] = [T::zero(); 3];
         let mut t: [T; 3] = [T::zero(); 3];
         let mut s: [T; 3] = [T::zero(); 3];
+
         let g = gamma(p.vx, p.vy, p.vz);
         let cm = c / m;
-        t[0] = cm * b[0] * T::from(0.5).unwrap() * dt / g;
-        t[1] = cm * b[1] * T::from(0.5).unwrap() * dt / g;
-        t[2] = cm * b[2] * T::from(0.5).unwrap() * dt / g;
+        let half_dt = T::from(0.5).unwrap() * dt;
+
+        v_minus[0] = p.vx + cm * e[0] * half_dt;
+        v_minus[1] = p.vy + cm * e[1] * half_dt;
+        v_minus[2] = p.vz + cm * e[2] * half_dt;
+
+        t[0] = cm * b[0] * half_dt / g;
+        t[1] = cm * b[1] * half_dt / g;
+        t[2] = cm * b[2] * half_dt / g;
 
         let t_mag2 = t[0].powi(2) + t[1].powi(2) + t[2].powi(2);
+        let s_factor = T::from(2.0).unwrap() / (T::one() + t_mag2);
 
-        s[0] = T::from(2.0).unwrap() * t[0] / (T::one() + t_mag2);
-        s[1] = T::from(2.0).unwrap() * t[1] / (T::one() + t_mag2);
-        s[2] = T::from(2.0).unwrap() * t[2] / (T::one() + t_mag2);
+        s[0] = t[0] * s_factor;
+        s[1] = t[1] * s_factor;
+        s[2] = t[2] * s_factor;
 
-        v_minus[0] = p.vx + cm * e[0] * T::from(0.5).unwrap() * dt;
-        v_minus[1] = p.vy + cm * e[1] * T::from(0.5).unwrap() * dt;
-        v_minus[2] = p.vz + cm * e[2] * T::from(0.5).unwrap() * dt;
+        v_prime[0] = v_minus[0] + (v_minus[1] * t[2] - v_minus[2] * t[1]);
+        v_prime[1] = v_minus[1] + (v_minus[2] * t[0] - v_minus[0] * t[2]);
+        v_prime[2] = v_minus[2] + (v_minus[0] * t[1] - v_minus[1] * t[0]);
 
-        v_prime[0] = v_minus[0] + v_minus[1] * t[2] - v_minus[2] * t[1];
-        v_prime[1] = v_minus[1] - v_minus[0] * t[2] + v_minus[2] * t[0];
-        v_prime[2] = v_minus[2] + v_minus[0] * t[1] - v_minus[1] * t[0];
+        v_plus[0] = v_minus[0] + (v_prime[1] * s[2] - v_prime[2] * s[1]);
+        v_plus[1] = v_minus[1] + (v_prime[2] * s[0] - v_prime[0] * s[2]);
+        v_plus[2] = v_minus[2] + (v_prime[0] * s[1] - v_prime[1] * s[0]);
 
-        v_plus[0] = v_minus[0] + v_prime[1] * s[2] - v_prime[2] * s[1];
-        v_plus[1] = v_minus[1] - v_prime[0] * s[2] + v_prime[2] * s[0];
-        v_plus[2] = v_minus[2] + v_prime[0] * s[1] - v_prime[1] * s[0];
-
-        p.vx = v_plus[0] + cm * e[0] * T::from(0.5).unwrap() * dt;
-        p.vy = v_plus[1] + cm * e[1] * T::from(0.5).unwrap() * dt;
-        p.vz = v_plus[2] + cm * e[2] * T::from(0.5).unwrap() * dt;
-
+        p.vx = v_plus[0] + cm * e[0] * half_dt;
+        p.vy = v_plus[1] + cm * e[1] * half_dt;
+        p.vz = v_plus[2] + cm * e[2] * half_dt;
         p.x = p.x + p.vx * dt;
         p.y = p.y + p.vy * dt;
         p.z = p.z + p.vz * dt;
@@ -2998,6 +3047,7 @@ pub mod mod_vlsv_tracing {
         let denominator = charge.abs() * b_mag;
         numerator / denominator
     }
+
     pub fn boris_adaptive<T: PtrTrait, F: Field<T> + std::marker::Sync>(
         p: &mut Particle<T>,
         f: &F,
@@ -3070,7 +3120,7 @@ pub mod mod_vlsv_tracing {
 
             let b = [fields_at_p[0], fields_at_p[1], fields_at_p[2]];
             let larmor = larmor_radius(p, &b, mass, charge);
-            let tol = T::from(larmor / T::from(100.0).unwrap()).unwrap();
+            let tol = T::from(larmor / T::from(360.0).unwrap()).unwrap();
 
             let new_dt = T::from(0.9).unwrap()
                 * *dt
