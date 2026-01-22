@@ -2779,6 +2779,11 @@ pub mod mod_vlsv_tracing {
             }
         }
     }
+    impl<T: PtrTrait> ParticlePopulation<T> {
+        pub fn count_alive(&self) -> usize {
+            self.alive.iter().copied().filter(|&alive| alive).count()
+        }
+    }
 
     impl<'a, T: PtrTrait> Iterator for ParticleIter<'a, T> {
         type Item = ParticleView<'a, T>;

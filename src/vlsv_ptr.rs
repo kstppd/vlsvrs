@@ -10,8 +10,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
 
-const TOUT: f64 = 0.25;
-const TMAX: f64 = 300.0;
+const TOUT: f64 = 5.0;
+const TMAX: f64 = 500.0;
 const DEFAULT_VLSV: &str = "/home/kstppd/Desktop/bulk.0000601.vlsv";
 
 pub fn push_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
@@ -51,7 +51,7 @@ pub fn push_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let args: Vec<String> = env::args().collect();
-    let fields = VlsvStaticField::<f64>::new(&String::from(DEFAULT_VLSV), [false, false, true]);
+    let fields = VlsvStaticField::<f64>::new(&String::from(DEFAULT_VLSV), [false, false, false]);
     let mass = physical_constants::f64::PROTON_MASS;
     let charge = physical_constants::f64::PROTON_CHARGE;
     let mut actual_time: f64 = 0.0;
@@ -92,9 +92,10 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let mut out_count = 0;
 
     while actual_time < TMAX {
+        let n_alive = pop_arc.lock().unwrap().count_alive();
         println!(
-            "Tracing {} particles at t= {:.3} s",
-            num_particles, actual_time
+            "Tracing {} particles [{} alive]at t= {:.3} s",
+            num_particles, n_alive, actual_time
         );
 
         push_population_cpu_adpt(&mut pop_arc, &fields, TOUT, &mut actual_time);
@@ -113,7 +114,7 @@ mod tests {
     use crate::physical_constants::f64::*;
     use std::f64::consts::PI;
 
-    const ANGLE_TOL_DEG: f64 = 0.5; // Degree tolerance for a full rotation
+    const ANGLE_TOL_DEG: f64 = 0.5;
     const PERCENT_TOLERANCE: f64 = 0.1;
 
     fn get_analytical_values(vperp: f64, bmag: f64, q: f64, m: f64) -> (f64, f64, f64) {
