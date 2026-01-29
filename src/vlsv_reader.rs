@@ -49,7 +49,7 @@ There are 3 main parts here:
 pub mod mod_vlsv_reader {
     pub const VLSV_FOOTER_LOC_START: usize = 8;
     pub const VLSV_FOOTER_LOC_END: usize = 16;
-    use bytemuck::{Pod, cast_slice};
+    use bytemuck::{Pod, Zeroable, cast_slice};
     use core::convert::TryInto;
     use memmap2::Mmap;
     use ndarray::{Array4, ArrayView1};
@@ -60,6 +60,291 @@ pub mod mod_vlsv_reader {
     use serde::Deserialize;
     use std::{collections::HashMap, str::FromStr};
     extern crate libc;
+
+    #[repr(C)]
+    #[derive(Default, Clone, Copy, Debug, Pod, Zeroable)]
+    pub struct Norms {
+        pub min: f64,
+        pub max: f64,
+    }
+
+    #[derive(Debug)]
+    pub struct PhaseSpaceUnion<T> {
+        pub nrows: usize,
+        pub ncols: usize,
+        pub center_vdfs: bool,
+        pub norms: Vec<Norms>,
+        pub cids: Vec<u64>,
+        pub vcoords: Vec<[T; 3]>,
+        pub vbulks: Vec<[T; 3]>,
+        pub vspace: Vec<T>,
+        pub map: HashMap<u64, usize>,
+        pub network_weights: Vec<T>,
+        pub effective_vdf_size: usize,
+        pub v_limits: [T; 6],
+    }
+
+    impl<T> PhaseSpaceUnion<T>
+    where
+        T: Pod + Zeroable + Default + PartialOrd + num_traits::Float + std::fmt::Display,
+    {
+        pub fn new_from_buffer(buffer: &[u8]) -> Result<Self, String> {
+            let mut instance = Self::empty();
+            instance.deserialize_from(buffer)?;
+            Ok(instance)
+        }
+
+        fn empty() -> Self {
+            Self {
+                nrows: 0,
+                ncols: 0,
+                center_vdfs: false,
+                norms: Vec::new(),
+                cids: Vec::new(),
+                vcoords: Vec::new(),
+                vbulks: Vec::new(),
+                vspace: Vec::new(),
+                map: HashMap::new(),
+                network_weights: Vec::new(),
+                effective_vdf_size: 0,
+                v_limits: [
+                    T::max_value(),
+                    T::max_value(),
+                    T::max_value(),
+                    T::min_value(),
+                    T::min_value(),
+                    T::min_value(),
+                ],
+            }
+        }
+
+        pub fn index_2d(&self, row: usize, col: usize) -> usize {
+            row * self.ncols + col
+        }
+
+        pub fn unnormalize_and_unscale(&mut self, sparse: T) {
+            let two = T::from(2.0).unwrap();
+            let one = T::from(1.0).unwrap();
+            let ten = T::from(10.0).unwrap();
+
+            for x in self.vcoords.iter_mut() {
+                x[0] =
+                    ((x[0] + one) / two) * (self.v_limits[3] - self.v_limits[0]) + self.v_limits[0];
+                x[1] =
+                    ((x[1] + one) / two) * (self.v_limits[4] - self.v_limits[1]) + self.v_limits[1];
+                x[2] =
+                    ((x[2] + one) / two) * (self.v_limits[5] - self.v_limits[2]) + self.v_limits[2];
+            }
+
+            for v in 0..self.ncols {
+                let max_val = T::from(self.norms[v].max).unwrap();
+
+                for i in 0..self.nrows {
+                    let idx = self.index_2d(i, v);
+                    self.vspace[idx] = sparse * ten.powf(self.vspace[idx] * max_val);
+                }
+            }
+        }
+
+        pub fn sparsify(&mut self, sparse: T) {
+            let zero = T::zero();
+            for x in self.vspace.iter_mut() {
+                if *x < sparse {
+                    *x = zero;
+                }
+            }
+        }
+
+        pub fn deserialize_from(&mut self, buffer: &[u8]) -> Result<(), String> {
+            fn consume<'a>(remaining: &mut &'a [u8], n: usize) -> Result<&'a [u8], String> {
+                if remaining.len() < n {
+                    return Err("Buffer underflow".into());
+                }
+                let (head, tail) = remaining.split_at(n);
+                *remaining = tail;
+                Ok(head)
+            }
+
+            let h_size = std::mem::size_of::<Header>();
+            let header: Header = *bytemuck::from_bytes(&buffer[..h_size]);
+
+            if header.key != 42 {
+                return Err("Wrong MLP Header KEY".into());
+            }
+
+            self.nrows = header.rows;
+            self.ncols = header.cols;
+            self.vspace.resize(self.nrows * self.ncols, T::default());
+
+            let mut remaining = &buffer[h_size..];
+
+            self.cids = bytemuck::cast_slice(consume(&mut remaining, self.ncols * 8)?).to_vec();
+            self.norms = bytemuck::cast_slice(consume(&mut remaining, self.ncols * 16)?).to_vec();
+
+            let vbulk_len = self.ncols * std::mem::size_of::<[T; 3]>();
+            self.vbulks = bytemuck::cast_slice(consume(&mut remaining, vbulk_len)?).to_vec();
+
+            let v_lim_bytes = 6 * std::mem::size_of::<T>();
+            self.v_limits
+                .copy_from_slice(bytemuck::cast_slice(consume(&mut remaining, v_lim_bytes)?));
+
+            let vcoords_len = self.nrows * std::mem::size_of::<[T; 3]>();
+            self.vcoords = bytemuck::cast_slice(consume(&mut remaining, vcoords_len)?).to_vec();
+
+            let weights_len = header.n_weights * std::mem::size_of::<T>();
+            self.network_weights =
+                bytemuck::cast_slice(consume(&mut remaining, weights_len)?).to_vec();
+
+            while !remaining.is_empty() {
+                let k: u64 = *bytemuck::from_bytes(consume(&mut remaining, 8)?);
+                let v: usize = *bytemuck::from_bytes(consume(&mut remaining, 8)?);
+                self.map.insert(k, v);
+            }
+
+            Ok(())
+        }
+
+        pub fn total_serialized_size_bytes(&self) -> usize {
+            std::mem::size_of::<Header>()
+                + self.cids.len() * 8
+                + self.norms.len() * 16
+                + self.vbulks.len() * std::mem::size_of::<[T; 3]>()
+                + self.vcoords.len() * std::mem::size_of::<[T; 3]>()
+                + 6 * std::mem::size_of::<T>()
+                + self.network_weights.len() * std::mem::size_of::<T>()
+                + self.map.len() * 16
+        }
+    }
+
+    impl PhaseSpaceUnion<f32> {
+        pub fn decompress(&mut self, hidden_layers: &[usize], fourier_order: usize) {
+            #[link(name = "vlasiator_vdf_compressor_nn")]
+            unsafe extern "C" {
+                pub fn decompress_phasespace6D_f32_nopool(
+                    fin: usize,
+                    fout: usize,
+                    vcoords_ptr: *mut f32,
+                    vspace_ptr: *mut f32,
+                    size: usize,
+                    fourier_order: usize,
+                    hidden_layers_ptr: *const usize,
+                    n_hidden_layers: usize,
+                    weights_ptr: *mut f32,
+                    weight_size: usize,
+                    use_input_weights: bool,
+                );
+            }
+            let n_rows = self.nrows;
+            let n_weights = self.network_weights.len();
+
+            unsafe {
+                decompress_phasespace6D_f32_nopool(
+                    3,
+                    self.ncols,
+                    self.vcoords.as_mut_ptr() as *mut f32,
+                    self.vspace.as_mut_ptr(),
+                    n_rows,
+                    fourier_order,
+                    hidden_layers.as_ptr(),
+                    hidden_layers.len(),
+                    self.network_weights.as_mut_ptr(),
+                    n_weights,
+                    true,
+                );
+            }
+        }
+
+        pub fn reconstruct_vdf_dense(&self, cid: usize, dv: f32) -> Array4<f32> {
+            let target = self
+                .cids
+                .iter()
+                .position(|&x| x == cid as u64)
+                .ok_or_else(|| format!("CID {} not found in this PhaseSpaceUnion", cid))
+                .unwrap();
+            let nvx = ((self.v_limits[3] - self.v_limits[0]) / dv).round() as usize;
+            let nvy = ((self.v_limits[4] - self.v_limits[1]) / dv).round() as usize;
+            let nvz = ((self.v_limits[5] - self.v_limits[2]) / dv).round() as usize;
+            let mut vdf = Array4::<f32>::zeros((nvx, nvy, nvz, 1));
+            for i in 0..self.nrows {
+                let global_vx = self.vcoords[i][0] + self.vbulks[target][0];
+                let global_vy = self.vcoords[i][1] + self.vbulks[target][1];
+                let global_vz = self.vcoords[i][2] + self.vbulks[target][2];
+                let ix = ((global_vx - self.v_limits[0]) / dv).round() as usize;
+                let iy = ((global_vy - self.v_limits[1]) / dv).round() as usize;
+                let iz = ((global_vz - self.v_limits[2]) / dv).round() as usize;
+                if ix < nvx && iy < nvy && iz < nvz {
+                    let value = self.vspace[i * self.ncols + target];
+                    vdf[[ix, iy, iz, 0]] = value;
+                }
+            }
+            vdf
+        }
+    }
+
+    impl PhaseSpaceUnion<f64> {
+        pub fn decompress(&mut self, hidden_layers: &[usize], fourier_order: usize) {
+            #[link(name = "vlasiator_vdf_compressor_nn")]
+            unsafe extern "C" {
+                pub fn decompress_phasespace6D_f64_nopool(
+                    fin: usize,
+                    fout: usize,
+                    vcoords_ptr: *mut f64,
+                    vspace_ptr: *mut f64,
+                    size: usize,
+                    fourier_order: usize,
+                    hidden_layers_ptr: *const usize,
+                    n_hidden_layers: usize,
+                    weights_ptr: *mut f64,
+                    weight_size: usize,
+                    use_input_weights: bool,
+                );
+            }
+            let n_rows = self.nrows;
+            let n_weights = self.network_weights.len();
+
+            unsafe {
+                decompress_phasespace6D_f64_nopool(
+                    3,
+                    self.ncols,
+                    self.vcoords.as_mut_ptr() as *mut f64,
+                    self.vspace.as_mut_ptr(),
+                    n_rows,
+                    fourier_order,
+                    hidden_layers.as_ptr(),
+                    hidden_layers.len(),
+                    self.network_weights.as_mut_ptr(),
+                    n_weights,
+                    true,
+                );
+            }
+        }
+
+        pub fn reconstruct_vdf_dense(&self, cid: usize, dv: f64) -> Array4<f64> {
+            let target = self
+                .cids
+                .iter()
+                .position(|&x| x == cid as u64)
+                .ok_or_else(|| format!("CID {} not found in this PhaseSpaceUnion", cid))
+                .unwrap();
+            let nvx = ((self.v_limits[3] - self.v_limits[0]) / dv).round() as usize;
+            let nvy = ((self.v_limits[4] - self.v_limits[1]) / dv).round() as usize;
+            let nvz = ((self.v_limits[5] - self.v_limits[2]) / dv).round() as usize;
+            let mut vdf = Array4::<f64>::zeros((nvx, nvy, nvz, 1));
+            for i in 0..self.nrows {
+                let global_vx = self.vcoords[i][0] + self.vbulks[target][0];
+                let global_vy = self.vcoords[i][1] + self.vbulks[target][1];
+                let global_vz = self.vcoords[i][2] + self.vbulks[target][2];
+                let ix = ((global_vx - self.v_limits[0]) / dv).round() as usize;
+                let iy = ((global_vy - self.v_limits[1]) / dv).round() as usize;
+                let iz = ((global_vz - self.v_limits[2]) / dv).round() as usize;
+                if ix < nvx && iy < nvy && iz < nvz {
+                    let value = self.vspace[i * self.ncols + target];
+                    vdf[[ix, iy, iz, 0]] = value;
+                }
+            }
+            vdf
+        }
+    }
 
     #[derive(Debug)]
     pub struct VlsvFile {
@@ -237,7 +522,7 @@ pub mod mod_vlsv_reader {
                 .or(Some(4.0))
                 .unwrap() as i32;
             match comrpession {
-                0 => "MLP",
+                0 => "MLPMULTI",
                 1 => "MLPMULTI",
                 2 => "ZFP",
                 3 => "OCTREE",
@@ -1088,8 +1373,178 @@ pub mod mod_vlsv_reader {
                     }
                     Some(decompressed_vdf)
                 }
-                _ => {
-                    todo!("VDF compression {compression_used:?} not handled yet!");
+                CompressionMethod::MLP | CompressionMethod::MLPMULTI => {
+                    let ntasks = self.get_writting_tasks()?;
+                    let mlp_bytes_per_rank_dset = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .mlp_bytes_per_rank
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+
+                    let mlp_clusters_per_rank_dset = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .mlp_clusters_per_rank
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+
+                    let mut mlp_bytes_per_rank: Vec<u64> =
+                        vec![0; mlp_bytes_per_rank_dset.arraysize];
+                    let mut mlp_clusters_per_rank: Vec<u64> =
+                        vec![0; mlp_clusters_per_rank_dset.arraysize];
+
+                    self.read_variable_into::<u64>(
+                        None,
+                        Some(mlp_bytes_per_rank_dset),
+                        &mut mlp_bytes_per_rank,
+                    );
+                    self.read_variable_into::<u64>(
+                        None,
+                        Some(mlp_clusters_per_rank_dset),
+                        &mut mlp_clusters_per_rank,
+                    );
+                    let nmlps: u64 = mlp_clusters_per_rank.iter().sum();
+                    let mut current_offset: u64 = 0;
+                    let scan_bytes_per_cell: Vec<u64> = mlp_bytes_per_rank
+                        .iter()
+                        .map(|&b| {
+                            let prev = current_offset;
+                            current_offset += b as u64;
+                            prev
+                        })
+                        .collect();
+
+                    let mut mlp_headers = vec![Header::default(); nmlps as usize];
+                    let mut nbytes_multi_mlp_case = Vec::new();
+                    let mut cnt = 0;
+                    let mut blockvariable = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .blockvariable
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+
+                    for i in 0..ntasks {
+                        let mut offset = 0;
+                        for _cluster in 0..mlp_clusters_per_rank[i] {
+                            let target_offset = scan_bytes_per_cell[i] + offset;
+                            let mut target_ds = blockvariable.clone();
+                            target_ds.offset += target_offset as usize;
+                            target_ds.arraysize = std::mem::size_of::<Header>();
+                            self.read_variable_into::<u8>(
+                                None,
+                                Some(target_ds),
+                                bytemuck::cast_slice_mut(&mut mlp_headers[cnt..cnt + 1]),
+                            );
+                            if nmlps > ntasks as u64 {
+                                nbytes_multi_mlp_case
+                                    .push(mlp_headers[cnt].total_size.try_into().unwrap());
+                            }
+                            offset += mlp_headers[cnt].total_size as u64;
+                            cnt += 1;
+                        }
+                    }
+
+                    let mut scan_bytes_per_cell = scan_bytes_per_cell;
+                    let mut current_nbytes = mlp_bytes_per_rank.clone();
+                    if nmlps > ntasks as u64 {
+                        current_nbytes = nbytes_multi_mlp_case;
+                        let mut current_offset: u64 = 0;
+                        scan_bytes_per_cell = current_nbytes
+                            .iter()
+                            .map(|&b| {
+                                let prev = current_offset;
+                                current_offset += b as u64;
+                                prev
+                            })
+                            .collect();
+                    }
+
+                    type CellID = u64;
+                    let mut mlp_cids: Vec<Vec<CellID>> = vec![Vec::new(); nmlps as usize];
+                    let mut cnt = 0;
+
+                    for i in 0..ntasks {
+                        for _cluster in 0..mlp_clusters_per_rank[i] {
+                            let cols = mlp_headers[cnt].cols;
+                            mlp_cids[cnt].resize(cols, 0 as CellID);
+                            let target_offset =
+                                scan_bytes_per_cell[cnt] + std::mem::size_of::<Header>() as u64;
+
+                            let mut target_ds = blockvariable.clone();
+                            target_ds.offset += target_offset as usize;
+                            target_ds.arraysize = cols * std::mem::size_of::<CellID>();
+                            self.read_variable_into::<CellID>(
+                                None,
+                                Some(target_ds),
+                                &mut mlp_cids[cnt],
+                            );
+
+                            cnt += 1;
+                        }
+                    }
+
+                    let cellswithblocks = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .cellswithblocks
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+
+                    let mut cids_with_blocks: Vec<usize> = vec![0; cellswithblocks.arraysize];
+                    self.read_variable_into::<usize>(
+                        None,
+                        Some(cellswithblocks),
+                        &mut cids_with_blocks,
+                    );
+
+                    let target_mlp = cids_with_blocks
+                        .iter()
+                        .find_map(|&cid| {
+                            mlp_cids
+                                .iter()
+                                .position(|cand_vec| cand_vec.contains(&(cid as u64)))
+                        })
+                        .unwrap();
+
+                    let fourier_order =
+                        self.read_scalar_parameter("FOURIER_ORDER").unwrap() as usize;
+                    let mlp_arch_dset = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .mlp_arch
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+                    let mut mlp_arch: Vec<i64> = vec![0; mlp_arch_dset.arraysize];
+                    self.read_variable_into::<i64>(None, Some(mlp_arch_dset), &mut mlp_arch);
+                    let mlp_arch_usize: Vec<usize> = mlp_arch.iter().map(|&x| x as usize).collect();
+                    let mut target_ds = blockvariable.clone();
+                    target_ds.offset += scan_bytes_per_cell[target_mlp] as usize;
+                    target_ds.arraysize = mlp_headers[target_mlp].total_size;
+                    let mut mlp_bytes = vec![u8::zero(); mlp_headers[target_mlp].total_size];
+                    self.read_variable_into::<u8>(None, Some(target_ds), &mut mlp_bytes);
+                    let mut phasespace = PhaseSpaceUnion::<f32>::new_from_buffer(&mlp_bytes)
+                        .expect("Could deserialize phasespace");
+                    phasespace.decompress(&mlp_arch_usize, fourier_order);
+                    phasespace.unnormalize_and_unscale(1e-16);
+                    phasespace.sparsify(1e-16);
+                    let bbox = self.get_vspace_mesh_bbox(pop).unwrap();
+                    let extent = self.get_vspace_mesh_extents(pop).unwrap();
+                    let dv = (extent.3 - extent.0) / bbox.0 as f64;
+                    let vdf = phasespace.reconstruct_vdf_dense(cid, dv as f32);
+                    let vdf_t = vdf.mapv(|val| T::from(val).unwrap());
+                    Some(vdf_t)
                 }
             }
         }
@@ -1989,6 +2444,15 @@ pub mod mod_vlsv_reader {
         #[serde(rename = "CELLSWITHBLOCKS")]
         pub cellswithblocks: Option<Vec<Variable>>,
 
+        #[serde(rename = "MLP_BYTES_PER_RANK")]
+        pub mlp_bytes_per_rank: Option<Vec<Variable>>,
+
+        #[serde(rename = "MLP_ARCH")]
+        pub mlp_arch: Option<Vec<Variable>>,
+
+        #[serde(rename = "MLP_CLUSTERS_PER_RANK")]
+        pub mlp_clusters_per_rank: Option<Vec<Variable>>,
+
         #[serde(rename = "CONFIG")]
         pub config: Option<Vec<Variable>>,
 
@@ -2171,6 +2635,17 @@ pub mod mod_vlsv_reader {
                 other => Err(format!("Unknown datatype: {other}")),
             }
         }
+    }
+
+    #[repr(C)]
+    #[derive(Default, Clone, Copy, Debug, Pod, Zeroable)]
+    pub struct Header {
+        pub key: usize,
+        pub total_size: usize,
+        pub rows: usize,
+        pub cols: usize,
+        pub n_weights: usize,
+        pub type_size: usize,
     }
 
     #[derive(Debug, Clone, PartialEq)]
