@@ -217,6 +217,7 @@ pub mod mod_vlsv_reader {
     }
 
     impl PhaseSpaceUnion<f32> {
+        #[cfg(not(no_nn))]
         pub fn decompress(&mut self, hidden_layers: &[usize], fourier_order: usize) {
             #[link(name = "vlasiator_vdf_compressor_nn")]
             unsafe extern "C" {
@@ -282,6 +283,7 @@ pub mod mod_vlsv_reader {
     }
 
     impl PhaseSpaceUnion<f64> {
+        #[cfg(not(no_nn))]
         pub fn decompress(&mut self, hidden_layers: &[usize], fourier_order: usize) {
             #[link(name = "vlasiator_vdf_compressor_nn")]
             unsafe extern "C" {
@@ -1373,6 +1375,11 @@ pub mod mod_vlsv_reader {
                     }
                     Some(decompressed_vdf)
                 }
+                #[cfg(no_nn)]
+                CompressionMethod::MLP | CompressionMethod::MLPMULTI => {
+                    panic!("Compiled without MLP support");
+                }
+                #[cfg(not(no_nn))]
                 CompressionMethod::MLP | CompressionMethod::MLPMULTI => {
                     let ntasks = self.get_writting_tasks()?;
                     let mlp_bytes_per_rank_dset = TryInto::<VlsvDataset>::try_into(
