@@ -197,7 +197,7 @@ fn main() {
                     _ => panic!(),
                 };
                 let idx = (val * 255.0).round().clamp(0.0, 255.0) as usize;
-                image.draw_pixel(x, y, palette[idx]);
+                image.draw_pixel(x, height - y, palette[idx]);
             }
         }
         image.resize(rl.get_screen_width(), rl.get_screen_height());

@@ -41,6 +41,11 @@ fn print_variables(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("VDF Compression: {:?}", f.read_compression());
     println!("Total VDF Size: {:?} bytes", f.get_vdf_size("proton"));
+    println!(
+        "Sparsity: {:?}",
+        f.read_sparsity::<f32>("proton/vg_effectivesparsitythreshold", 1)
+    );
+
     println!("Max AMR level: {:?}", f.get_max_amr_refinement().unwrap());
     let pops = f.get_all_populations().unwrap();
     println!("Populations: {:?} ", pops);

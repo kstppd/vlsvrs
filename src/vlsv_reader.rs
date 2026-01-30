@@ -49,7 +49,7 @@ There are 3 main parts here:
 pub mod mod_vlsv_reader {
     pub const VLSV_FOOTER_LOC_START: usize = 8;
     pub const VLSV_FOOTER_LOC_END: usize = 16;
-    use bytemuck::{Pod, Zeroable, cast_slice};
+    use bytemuck::{Pod, Zeroable, cast_slice, pod_read_unaligned};
     use core::convert::TryInto;
     use memmap2::Mmap;
     use ndarray::{Array4, ArrayView1};
@@ -615,7 +615,7 @@ pub mod mod_vlsv_reader {
             Some(version)
         }
 
-        fn read_variable_into<T: Sized + Pod + TypeTag>(
+        fn read_variable_into<T: Sized + Pod + TypeTag + std::cmp::PartialOrd>(
             &self,
             name: Option<&str>,
             dataset: Option<VlsvDataset>,
@@ -1030,7 +1030,7 @@ pub mod mod_vlsv_reader {
         }
 
         pub fn read_vg_variable_as_fg<
-            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag + std::cmp::PartialOrd,
         >(
             &self,
             name: &str,
@@ -1059,7 +1059,7 @@ pub mod mod_vlsv_reader {
         }
 
         pub fn read_fsgrid_variable<
-            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag + std::cmp::PartialOrd,
         >(
             &self,
             name: &str,
@@ -1151,7 +1151,14 @@ pub mod mod_vlsv_reader {
 
         pub fn read_vdf<T>(&self, cid: usize, pop: &str) -> Option<Array4<T>>
         where
-            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+            T: Pod
+                + Zero
+                + Num
+                + NumCast
+                + std::iter::Sum
+                + Default
+                + TypeTag
+                + std::cmp::PartialOrd,
         {
             let blockspercell = TryInto::<VlsvDataset>::try_into(
                 self.root()
@@ -1227,6 +1234,9 @@ pub mod mod_vlsv_reader {
                 .clone()
                 .unwrap_or(CompressionMethod::NONE);
 
+            let sparse: T = self
+                .read_sparsity(pop, cid)
+                .unwrap_or(T::from(1e-16).unwrap());
             match compression_used {
                 CompressionMethod::NONE => {
                     let blockids = TryInto::<VlsvDataset>::try_into(
@@ -1258,7 +1268,10 @@ pub mod mod_vlsv_reader {
                                     let gi = bi * wid + di;
                                     let gj = bj * wid + dj;
                                     let gk = bk * wid + dk;
-                                    vdf[(gi, gj, gk, 0)] = block_buf[local_id];
+                                    let val = block_buf[local_id];
+                                    if val >= sparse {
+                                        vdf[(gi, gj, gk, 0)] = block_buf[local_id];
+                                    }
                                 }
                             }
                         }
@@ -1322,7 +1335,10 @@ pub mod mod_vlsv_reader {
                                     let gi = bi * wid + di;
                                     let gj = bj * wid + dj;
                                     let gk = bk * wid + dk;
-                                    vdf[(gi, gj, gk, 0)] = block_buf[local_id];
+                                    let val = block_buf[local_id];
+                                    if val >= sparse {
+                                        vdf[(gi, gj, gk, 0)] = block_buf[local_id];
+                                    }
                                 }
                             }
                         }
@@ -1395,6 +1411,11 @@ pub mod mod_vlsv_reader {
                             len as u64,
                         );
                     }
+                    decompressed_vdf.iter_mut().for_each(|val| {
+                        if *val < sparse {
+                            *val = T::zero();
+                        }
+                    });
                     Some(decompressed_vdf)
                 }
                 #[cfg(not(no_nn))]
@@ -1568,7 +1589,12 @@ pub mod mod_vlsv_reader {
                     let extent = self.get_vspace_mesh_extents(pop).unwrap();
                     let dv = (extent.3 - extent.0) / bbox.0 as f64;
                     let vdf = phasespace.reconstruct_vdf_dense(cid, dv as f32);
-                    let vdf_t = vdf.mapv(|val| T::from(val).unwrap());
+                    let mut vdf_t = vdf.mapv(|val| T::from(val).unwrap());
+                    vdf_t.iter_mut().for_each(|val| {
+                        if *val < sparse {
+                            *val = T::zero();
+                        }
+                    });
                     Some(vdf_t)
                 }
                 #[cfg(no_nn)]
@@ -1594,7 +1620,14 @@ pub mod mod_vlsv_reader {
             target_extent: (f64, f64, f64, f64, f64, f64),
         ) -> Option<()>
         where
-            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+            T: Pod
+                + Zero
+                + Num
+                + NumCast
+                + std::iter::Sum
+                + Default
+                + TypeTag
+                + std::cmp::PartialOrd,
         {
             let vdf: Array4<T> = self.read_vdf::<T>(cid, pop)?;
             let src_extent = self.get_vspace_mesh_extents(pop)?;
@@ -1610,7 +1643,14 @@ pub mod mod_vlsv_reader {
             scale_factor: f64,
         ) -> Option<Array4<T>>
         where
-            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+            T: Pod
+                + Zero
+                + Num
+                + NumCast
+                + std::iter::Sum
+                + Default
+                + TypeTag
+                + std::cmp::PartialOrd,
         {
             let dst_extents = self.get_vspace_mesh_extents(pop)?;
 
@@ -1627,7 +1667,24 @@ pub mod mod_vlsv_reader {
             Some(vdf)
         }
 
-        pub fn read_variable<T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag>(
+        pub fn read_sparsity<
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag + std::cmp::PartialOrd,
+        >(
+            &self,
+            name: &str,
+            cid: usize,
+        ) -> Option<T> {
+            let v = self.read_vg_variable_at_as_ref_dyn::<T>(name, Some(0), &[cid], &mut [0])?[0];
+            let mut k: f32 = f32::zero();
+            for chunk in v.chunks_exact(std::mem::size_of::<f32>()) {
+                k = pod_read_unaligned::<f32>(chunk);
+            }
+            T::from(k)
+        }
+
+        pub fn read_variable<
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag + std::cmp::PartialOrd,
+        >(
             &self,
             name: &str,
             op: Option<i32>,
@@ -1637,7 +1694,7 @@ pub mod mod_vlsv_reader {
         }
 
         pub fn read_variable_zoom<
-            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag + std::cmp::PartialOrd,
         >(
             &self,
             name: &str,
@@ -1664,7 +1721,7 @@ pub mod mod_vlsv_reader {
         }
 
         pub fn read_vg_variable_at<
-            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag,
+            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag + std::cmp::PartialOrd,
         >(
             &self,
             name: &str,
@@ -2457,6 +2514,22 @@ pub mod mod_vlsv_reader {
         #[serde(rename = "$value")]
         pub offset: Option<String>,
     }
+
+    //  def get_sparsity_for_cid(self,cellid,pop):
+    // if self.check_variable('MinValue') == True:
+    //    val = self.read_variable('MinValue',cellid)
+    //    logging.info("Found a vlsv file MinValue of "+str(val))
+    // elif self.check_variable(pop+"/EffectiveSparsityThreshold") == True:
+    //    val = self.read_variable(pop+"/EffectiveSparsityThreshold",cellid)
+    //    logging.info("Found a vlsv file value "+pop+"/EffectiveSparsityThreshold"+" of "+str(val))
+    // elif self.check_variable(pop+"/vg_effectivesparsitythreshold") == True:
+    //    val = self.read_variable(pop+"/vg_effectivesparsitythreshold",cellid)
+    //    logging.info("Found a vlsv file value "+pop+"/vg_effectivesparsitythreshold"+" of "+str(val))
+    // else:
+    //    logging.warning("Unable to find a MinValue or EffectiveSparsityThreshold value from the .vlsv file.")
+    //    logging.info("Using a default value of 1.e-16. Override with val=value.")
+    //    val = 1.e-16
+    // return val
 
     #[derive(Deserialize, Debug)]
     pub struct VlsvRoot {
