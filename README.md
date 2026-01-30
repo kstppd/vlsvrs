@@ -17,7 +17,7 @@ This package is written in rust, so you will need [cargo](https://doc.rust-lang.
 
 ## C Bindings
 
-Toinstall the C bindings system-wide (headers and `vlsvrs` library):
+To install the C bindings system-wide (headers and `vlsvrs` library):
 
 ```bash
 ./install.sh

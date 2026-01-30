@@ -1265,10 +1265,6 @@ pub mod mod_vlsv_reader {
                     }
                     Some(vdf)
                 }
-                #[cfg(no_octree)]
-                CompressionMethod::OCTREE => {
-                    panic!("Compiled without OCTREE support");
-                }
                 #[cfg(feature = "zfp")]
                 CompressionMethod::ZFP => {
                     let vdf_byte_size =
@@ -1339,6 +1335,7 @@ pub mod mod_vlsv_reader {
                     use core::ffi::{c_float, c_ulonglong};
                     use std::os::raw::c_uchar;
                     type VdfReal = c_float;
+                    #[link(name = "toctree_compressor")]
                     unsafe extern "C" {
                         pub fn uncompress_with_toctree_method(
                             buffer: *mut VdfReal,
@@ -1399,10 +1396,6 @@ pub mod mod_vlsv_reader {
                         );
                     }
                     Some(decompressed_vdf)
-                }
-                #[cfg(no_nn)]
-                CompressionMethod::MLP | CompressionMethod::MLPMULTI => {
-                    panic!("Compiled without MLP support");
                 }
                 #[cfg(not(no_nn))]
                 CompressionMethod::MLP | CompressionMethod::MLPMULTI => {
@@ -1577,6 +1570,18 @@ pub mod mod_vlsv_reader {
                     let vdf = phasespace.reconstruct_vdf_dense(cid, dv as f32);
                     let vdf_t = vdf.mapv(|val| T::from(val).unwrap());
                     Some(vdf_t)
+                }
+                #[cfg(no_nn)]
+                CompressionMethod::MLP | CompressionMethod::MLPMULTI => {
+                    panic!("Compiled without MLP support");
+                }
+                #[cfg(no_octree)]
+                CompressionMethod::OCTREE => {
+                    panic!("Compiled without OCTREE support");
+                }
+                #[cfg(not(feature = "zfp"))]
+                CompressionMethod::ZFP => {
+                    panic!("Compiled without ZFP support");
                 }
             }
         }
