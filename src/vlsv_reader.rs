@@ -1429,7 +1429,7 @@ pub mod mod_vlsv_reader {
                     let mut mlp_headers = vec![Header::default(); nmlps as usize];
                     let mut nbytes_multi_mlp_case = Vec::new();
                     let mut cnt = 0;
-                    let mut blockvariable = TryInto::<VlsvDataset>::try_into(
+                    let blockvariable = TryInto::<VlsvDataset>::try_into(
                         self.root()
                             .blockvariable
                             .as_ref()?
@@ -1460,7 +1460,7 @@ pub mod mod_vlsv_reader {
                     }
 
                     let mut scan_bytes_per_cell = scan_bytes_per_cell;
-                    let mut current_nbytes = mlp_bytes_per_rank.clone();
+                    let mut current_nbytes = vec![0; mlp_bytes_per_rank.len()];
                     if nmlps > ntasks as u64 {
                         current_nbytes = nbytes_multi_mlp_case;
                         let mut current_offset: u64 = 0;
