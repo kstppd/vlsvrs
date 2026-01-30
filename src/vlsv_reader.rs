@@ -532,6 +532,26 @@ pub mod mod_vlsv_reader {
             }
         }
 
+        pub fn get_vdf_size(&self, pop: &str) -> Option<usize> {
+            let root = self.root();
+            let blockids_size = root
+                .blockids
+                .as_ref()
+                .and_then(|list| list.iter().find(|v| v.name.as_deref() == Some(pop)))
+                .and_then(|item| TryInto::<VlsvDataset>::try_into(item).ok())
+                .map(|v| v.arraysize * v.vectorsize * v.datasize)
+                .unwrap_or(0);
+
+            let blockvariable_size = root
+                .blockvariable
+                .as_ref()
+                .and_then(|list| list.iter().find(|v| v.name.as_deref() == Some(pop)))
+                .and_then(|item| TryInto::<VlsvDataset>::try_into(item).ok())
+                .map(|v| v.arraysize * v.vectorsize * v.datasize)
+                .unwrap_or(0);
+            Some(blockvariable_size + blockids_size)
+        }
+
         pub fn read_scalar_parameter(&self, name: &str) -> Option<f64> {
             let info = self.get_dataset(name)?;
             debug_assert!(info.vectorsize == 1);
@@ -1169,8 +1189,13 @@ pub mod mod_vlsv_reader {
             let mut blocks_per_cell: Vec<u32> = vec![0; blockspercell.arraysize];
             self.read_variable_into::<usize>(None, Some(cellswithblocks), &mut cids_with_blocks);
             self.read_variable_into::<u32>(None, Some(blockspercell), &mut blocks_per_cell);
-
-            let index = cids_with_blocks.iter().position(|&v| v == cid)?;
+            let index_res = cids_with_blocks.iter().position(|&v| v == cid);
+            let index = if let Some(v) = index_res {
+                v
+            } else {
+                println!("Available cids with blocks{:?}", cids_with_blocks);
+                panic!("CID DOES NOT CONTAINS VDF!");
+            };
             let read_size = blocks_per_cell[index] as usize;
             let start_block = blocks_per_cell[..index]
                 .iter()
@@ -1285,7 +1310,7 @@ pub mod mod_vlsv_reader {
                     let mut zblocks: Vec<u8> = vec![0_u8; zread_size];
                     let zblockvar_slice = slice_ds(&blockvariable, zstart_block, zread_size);
                     self.read_variable_into::<u8>(None, Some(zblockvar_slice), &mut zblocks);
-                    let retval = zfp_decompress_1d_f32(&zblocks, vsamples, 1e-16).unwrap();
+                    let retval = zfp_decompress_1d_f32(&zblocks, vsamples, 8e-16).unwrap();
                     blocks.resize(retval.len(), T::zeroed());
                     blocks.copy_from_slice(bytemuck::cast_slice(retval.as_slice()));
                     let mut vdf = Array4::<T>::zeros((nvx, nvy, nvz, 1));

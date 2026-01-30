@@ -40,6 +40,7 @@ fn print_variables(f: &VlsvFile) -> Result<(), Box<dyn std::error::Error>> {
         f.get_spatial_mesh_extents().unwrap()
     );
     println!("VDF Compression: {:?}", f.read_compression());
+    println!("Total VDF Size: {:?} bytes", f.get_vdf_size("proton"));
     println!("Max AMR level: {:?}", f.get_max_amr_refinement().unwrap());
     let pops = f.get_all_populations().unwrap();
     println!("Populations: {:?} ", pops);
