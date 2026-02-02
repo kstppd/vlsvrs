@@ -37,28 +37,48 @@ Grid64 read_vdf_64(const char *filename, const char *population, size_t cid);
 ```
 Example usage in C:
 ```c
-// gcc main.c -Wall -Wextra -O3 -lvlsvrs -o bin && ./bin
+/* gcc main.c -Wall -Wextra -O3 -lvlsvrs -o bin && ./bin
+Output:
+  VDF with shape [100,100,100] extents[-3000000.000000,-3000000.000000,-3000000.000000,3000000.000000,3000000.000000,3000000.000000] @0x7c41f502f010
+  
+  rho with shape [12,8,1] extents[-5250000.000000,-3500000.000000,-437500.000000,5250000.000000,3500000.000000,437500.000000] @0x62ee34227490
+  
+  velocity with shape [12,8,1] extents[-5250000.000000,-3500000.000000,-437500.000000,5250000.000000,3500000.000000,437500.000000] @0x62ee3420fdf0
+
+*/
 #include "stdlib.h"
 #include "vlsvrs.h"
 #include <stdio.h>
 
-int main() {
-  Grid32 vdf1 =
-      read_vdf_32("tsi.vlsv", "proton", 256);
-  Grid64 vdf2 =
-      read_vdf_64("tsi.vlsv", "proton", 256);
+int main(int argc, char **argv) {
+  (void)argc;
 
-  printf("VDF1 with shape [%zu,%zu,%zu] extents[%f,%f,%f,%f,%f,%f] @%p\n",
-         vdf1.nx, vdf1.ny, vdf1.nz, vdf1.xmin, vdf1.ymin, vdf1.zmin, vdf1.xmax,
-         vdf1.ymax, vdf1.zmax, vdf1.data);
-  printf("VDF2 with shape [%zu,%zu,%zu] extents[%f,%f,%f,%f,%f,%f] @%p\n",
-         vdf2.nx, vdf2.ny, vdf2.nz, vdf2.xmin, vdf2.ymin, vdf2.zmin, vdf2.xmax,
-         vdf2.ymax, vdf2.zmax, vdf2.data);
-  printf("Hello World!\n");
+  // Reading in VDFs
+  VLSVRS_Grid32 vdf = read_vdf_32(argv[1], "proton", 32);
+  printf("VDF with shape [%zu,%zu,%zu] extents[%f,%f,%f,%f,%f,%f] @%p\n",
+         vdf.nx, vdf.ny, vdf.nz, vdf.xmin, vdf.ymin, vdf.zmin, vdf.xmax,
+         vdf.ymax, vdf.zmax, vdf.data);
 
-  //RAII?? GG...
-  free(vdf1.data);
-  free(vdf2.data);
+  // Reading in Variables
+  VLSVRS_Grid32 rho = read_var_32(argv[1], "proton/vg_rho", 0);
+  read_vdf_32(argv[1], "proton", 32);
+  printf("rho with shape [%zu,%zu,%zu] extents[%f,%f,%f,%f,%f,%f] @%p\n",
+         rho.nx, rho.ny, rho.nz, rho.xmin, rho.ymin, rho.zmin, rho.xmax,
+         rho.ymax, rho.zmax, rho.data);
+
+  //Reading in Vy
+  VLSVRS_Grid32 velocity = read_var_32(argv[1], "proton/vg_v", 1);
+  read_vdf_32(argv[1], "proton", 32);
+  printf("velocity with shape [%zu,%zu,%zu] extents[%f,%f,%f,%f,%f,%f] @%p\n",
+         velocity.nx, velocity.ny, velocity.nz, velocity.xmin, velocity.ymin,
+         velocity.zmin, velocity.xmax, velocity.ymax, velocity.zmax,
+         velocity.data);
+
+  // RAII?? GG...
+  free(vdf.data);
+  free(rho.data);
+  free(velocity.data);
+}
 }
 ```
 
