@@ -44,7 +44,7 @@ void read_vdf_into_32(const char *fname, const char *pop, size_t cid,
 void read_vdf_into_64(const char *fname, const char *pop, size_t cid,
                       VLSVRS_Grid64 *target);
 double read_scalar_parameter(const char *fname, const char *parameter);
-size_t get_wid(const char *pop);
+size_t get_wid(const char *fname, const char *pop);
 
 #ifdef VLSVRS_STRIP_PREFIX
 #define VLSVRS_Grid32 Grid32

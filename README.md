@@ -44,7 +44,10 @@ Output:
   rho with shape [12,8,1] extents[-5250000.000000,-3500000.000000,-437500.000000,5250000.000000,3500000.000000,437500.000000] @0x62ee34227490
   
   velocity with shape [12,8,1] extents[-5250000.000000,-3500000.000000,-437500.000000,5250000.000000,3500000.000000,437500.000000] @0x62ee3420fdf0
-
+  
+  Velocity Block Width = 4
+  
+  Simulation time = 1.019220
 */
 #include "stdlib.h"
 #include "vlsvrs.h"
@@ -66,13 +69,21 @@ int main(int argc, char **argv) {
          rho.nx, rho.ny, rho.nz, rho.xmin, rho.ymin, rho.zmin, rho.xmax,
          rho.ymax, rho.zmax, rho.data);
 
-  //Reading in Vy
+  // Reading in Vy
   VLSVRS_Grid32 velocity = read_var_32(argv[1], "proton/vg_v", 1);
   read_vdf_32(argv[1], "proton", 32);
   printf("velocity with shape [%zu,%zu,%zu] extents[%f,%f,%f,%f,%f,%f] @%p\n",
          velocity.nx, velocity.ny, velocity.nz, velocity.xmin, velocity.ymin,
          velocity.zmin, velocity.xmax, velocity.ymax, velocity.zmax,
          velocity.data);
+
+  // Read WID 
+  size_t WID = get_wid(argv[1], "proton");
+  printf("Velocity Block Width = %zu \n", WID);
+
+  // Read in a scalar parameter
+  double time = read_scalar_parameter(argv[1], "time");
+  printf("Simulation time = %f \n", time);
 
   // RAII?? GG...
   free(vdf.data);
