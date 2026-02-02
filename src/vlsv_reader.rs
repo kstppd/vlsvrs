@@ -1583,8 +1583,7 @@ pub mod mod_vlsv_reader {
                     let mut phasespace = PhaseSpaceUnion::<f32>::new_from_buffer(&mlp_bytes)
                         .expect("Could deserialize phasespace");
                     phasespace.decompress(&mlp_arch_usize, fourier_order);
-                    phasespace.unnormalize_and_unscale(1e-16);
-                    phasespace.sparsify(1e-16);
+                    phasespace.unnormalize_and_unscale(<f32 as NumCast>::from(sparse).unwrap());
                     let bbox = self.get_vspace_mesh_bbox(pop).unwrap();
                     let extent = self.get_vspace_mesh_extents(pop).unwrap();
                     let dv = (extent.3 - extent.0) / bbox.0 as f64;
