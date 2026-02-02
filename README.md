@@ -79,7 +79,6 @@ int main(int argc, char **argv) {
   free(rho.data);
   free(velocity.data);
 }
-}
 ```
 
 ## FORTRAN bindings
