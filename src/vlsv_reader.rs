@@ -1149,6 +1149,257 @@ pub mod mod_vlsv_reader {
             Some(ordered_var)
         }
 
+        pub fn read_vdf_dict<T>(&self, cid: usize, pop: &str) -> Option<HashMap<usize, T>>
+        where
+            T: Pod
+                + Zero
+                + Num
+                + NumCast
+                + std::iter::Sum
+                + Default
+                + TypeTag
+                + std::cmp::PartialOrd
+                + Copy,
+        {
+            let blockspercell = TryInto::<VlsvDataset>::try_into(
+                self.root()
+                    .blockspercell
+                    .as_ref()?
+                    .iter()
+                    .find(|v| v.name.as_deref() == Some(pop))?,
+            )
+            .ok()?;
+
+            let cellswithblocks = TryInto::<VlsvDataset>::try_into(
+                self.root()
+                    .cellswithblocks
+                    .as_ref()?
+                    .iter()
+                    .find(|v| v.name.as_deref() == Some(pop))?,
+            )
+            .ok()?;
+
+            let blockvariable = TryInto::<VlsvDataset>::try_into(
+                self.root()
+                    .blockvariable
+                    .as_ref()?
+                    .iter()
+                    .find(|v| v.name.as_deref() == Some(pop))?,
+            )
+            .ok()?;
+
+            let wid = self.get_wid(pop)?;
+            let wid3 = wid.pow(3);
+            let (nvx, nvy, nvz) = self.get_vspace_mesh_bbox(pop)?;
+            let mut cids_with_blocks: Vec<usize> = vec![0; cellswithblocks.arraysize];
+            let mut blocks_per_cell: Vec<u32> = vec![0; blockspercell.arraysize];
+            self.read_variable_into::<usize>(
+                None,
+                Some(cellswithblocks.clone()),
+                &mut cids_with_blocks,
+            );
+            self.read_variable_into::<u32>(None, Some(blockspercell), &mut blocks_per_cell);
+
+            let index = cids_with_blocks
+                .iter()
+                .position(|&v| v == cid)
+                .expect("CID DOES NOT CONTAIN VDF!");
+
+            let read_size = blocks_per_cell[index] as usize;
+            let start_block = blocks_per_cell[..index]
+                .iter()
+                .map(|&x| x as usize)
+                .sum::<usize>();
+
+            let slice_ds =
+                |ds: &VlsvDataset, elem_offset: usize, elem_count: usize| -> VlsvDataset {
+                    let mut sub = ds.clone();
+                    sub.offset = ds.offset + elem_offset * ds.vectorsize * ds.datasize;
+                    sub.arraysize = elem_count;
+                    sub
+                };
+
+            let sparse: T = self
+                .read_sparsity(pop, cid)
+                .unwrap_or(T::from(1e-16).unwrap());
+
+            let compression_used = blockvariable
+                .compression
+                .clone()
+                .unwrap_or(CompressionMethod::NONE);
+
+            let mut vdf_map = HashMap::with_capacity(1 << 20);
+
+            match compression_used {
+                CompressionMethod::NONE | CompressionMethod::ZFP => {
+                    let mut blocks: Vec<T> = vec![];
+                    let vsamples = read_size * wid3;
+
+                    match compression_used {
+                        CompressionMethod::NONE => {
+                            let blockvar_slice = slice_ds(&blockvariable, start_block, read_size);
+                            blocks.resize(vsamples, T::default());
+                            self.read_variable_into::<T>(None, Some(blockvar_slice), &mut blocks);
+                        }
+                        #[cfg(feature = "zfp")]
+                        CompressionMethod::ZFP => {
+                            let vdf_byte_size =
+                                self.read_scalar_parameter("VDF_BYTE_SIZE").unwrap() as usize;
+                            if vdf_byte_size != std::mem::size_of::<T>() {
+                                panic!("Reader mismatch for T and compressed VDF BYTE SIZE");
+                            }
+                            let bytespercell = TryInto::<VlsvDataset>::try_into(
+                                self.root()
+                                    .bytespercell
+                                    .as_ref()?
+                                    .iter()
+                                    .find(|v| v.name.as_deref() == Some(pop))?,
+                            )
+                            .ok()?;
+
+                            let mut bytes_per_cell: Vec<u64> = vec![0; bytespercell.arraysize];
+                            self.read_variable_into::<u64>(
+                                None,
+                                Some(bytespercell),
+                                &mut bytes_per_cell,
+                            );
+
+                            let zread_size = bytes_per_cell[index] as usize;
+                            let zstart_block = bytes_per_cell[..index]
+                                .iter()
+                                .map(|&x| x as usize)
+                                .sum::<usize>();
+
+                            let mut zblocks: Vec<u8> = vec![0_u8; zread_size];
+                            let zblockvar_slice =
+                                slice_ds(&blockvariable, zstart_block, zread_size);
+                            self.read_variable_into::<u8>(
+                                None,
+                                Some(zblockvar_slice),
+                                &mut zblocks,
+                            );
+
+                            let retval =
+                                zfp_decompress_1d_f32(&zblocks, vsamples, sparse.to_f64().unwrap())
+                                    .unwrap();
+
+                            blocks.resize(retval.len(), T::zero());
+                            blocks.copy_from_slice(bytemuck::cast_slice(retval.as_slice()));
+                        }
+                        _ => unreachable!(),
+                    }
+
+                    let blockids = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .blockids
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+
+                    let mut block_ids: Vec<u32> = vec![0; read_size * blockids.vectorsize];
+                    let blockids_slice = slice_ds(&blockids, start_block, read_size);
+                    self.read_variable_into::<u32>(None, Some(blockids_slice), &mut block_ids);
+                    for (block_idx, &bid_u32) in block_ids.iter().enumerate() {
+                        let bid = bid_u32 as usize;
+                        let block_buf = &blocks[block_idx * wid3..(block_idx + 1) * wid3];
+                        for local_id in 0..wid3 {
+                            let val = block_buf[local_id];
+                            vdf_map.insert(local_id + (bid * wid3), val);
+                        }
+                    }
+                }
+
+                #[cfg(not(no_octree))]
+                CompressionMethod::OCTREE => {
+                    use std::os::raw::c_uchar;
+                    #[link(name = "toctree_compressor")]
+                    unsafe extern "C" {
+                        pub fn uncompress_with_toctree_method(
+                            buffer: *mut f32,
+                            Nx: usize,
+                            Ny: usize,
+                            Nz: usize,
+                            serialized_buffer: *mut c_uchar,
+                            serialized_buffer_size: u64,
+                        );
+                    }
+
+                    let bytespercell = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .bytespercell
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+                    let mut bytes_per_cell: Vec<u64> = vec![0; bytespercell.arraysize];
+                    self.read_variable_into::<u64>(None, Some(bytespercell), &mut bytes_per_cell);
+
+                    let zread_size = bytes_per_cell[index] as usize;
+                    let zstart_block = bytes_per_cell[..index]
+                        .iter()
+                        .map(|&x| x as usize)
+                        .sum::<usize>();
+                    let mut octree_bytes: Vec<u8> = vec![0_u8; zread_size];
+                    let blockvar_slice = slice_ds(&blockvariable, zstart_block, zread_size);
+                    self.read_variable_into::<u8>(None, Some(blockvar_slice), &mut octree_bytes);
+
+                    let octree_state =
+                        parse_octree_state(&octree_bytes).expect("OCTREE decode error");
+                    let octree_core = &mut octree_bytes[octree_state.read_index..];
+                    let mut decompressed_vdf = Array4::<T>::zeros([
+                        octree_state.bbox_shape[0],
+                        octree_state.bbox_shape[1],
+                        octree_state.bbox_shape[2],
+                        1,
+                    ]);
+
+                    unsafe {
+                        uncompress_with_toctree_method(
+                            decompressed_vdf.as_mut_ptr() as *mut f32,
+                            octree_state.bbox_shape[0],
+                            octree_state.bbox_shape[1],
+                            octree_state.bbox_shape[2],
+                            octree_core.as_mut_ptr(),
+                            octree_core.len() as u64,
+                        );
+                    }
+
+                    for (coord, &val) in decompressed_vdf.indexed_iter() {
+                        let (gi, gj, gk, _) = coord;
+                        vdf_map.insert(gi + nvx * (gj + nvy * gk), val);
+                    }
+                }
+
+                #[cfg(not(no_nn))]
+                CompressionMethod::MLP | CompressionMethod::MLPMULTI => {
+                    let bbox = self.get_vspace_mesh_bbox(pop).unwrap();
+                    let extent = self.get_vspace_mesh_extents(pop).unwrap();
+                    let dv = (extent.3 - extent.0) / bbox.0 as f64;
+                    let vdf = phasespace.reconstruct_vdf_dense(cid, dv as f32);
+                    let vdf_t = vdf.mapv(|val| T::from(val).unwrap());
+
+                    for (coord, &val) in vdf_t.indexed_iter() {
+                        let (gi, gj, gk, _) = coord;
+                        vdf_map.insert(gi + nvx * (gj + nvy * gk), val);
+                    }
+                }
+
+                #[cfg(no_nn)]
+                CompressionMethod::MLP | CompressionMethod::MLPMULTI => {
+                    panic!("Compiled without MLP support")
+                }
+                #[cfg(no_octree)]
+                CompressionMethod::OCTREE => panic!("Compiled without OCTREE support"),
+                #[cfg(not(feature = "zfp"))]
+                CompressionMethod::ZFP => panic!("Compiled without ZFP support"),
+            }
+
+            Some(vdf_map)
+        }
+
         pub fn read_vdf<T>(&self, cid: usize, pop: &str) -> Option<Array4<T>>
         where
             T: Pod
@@ -1319,7 +1570,12 @@ pub mod mod_vlsv_reader {
                     let mut zblocks: Vec<u8> = vec![0_u8; zread_size];
                     let zblockvar_slice = slice_ds(&blockvariable, zstart_block, zread_size);
                     self.read_variable_into::<u8>(None, Some(zblockvar_slice), &mut zblocks);
-                    let retval = zfp_decompress_1d_f32(&zblocks, vsamples, 8e-16).unwrap();
+                    let retval = zfp_decompress_1d_f32(
+                        &zblocks,
+                        vsamples,
+                        sparse.to_f64().expect("Failed to cast sparse value to f64"),
+                    )
+                    .unwrap();
                     blocks.resize(retval.len(), T::zeroed());
                     blocks.copy_from_slice(bytemuck::cast_slice(retval.as_slice()));
                     let mut vdf = Array4::<T>::zeros((nvx, nvy, nvz, 1));
@@ -4500,6 +4756,28 @@ pub mod mod_vlsv_py_exports {
             let new_extents = (vxmin, vymin, vzmin, vxmax, vymax, vzmax);
             self.inner.read_vdf_into(cid, pop, &mut vdf, new_extents);
             Ok(vdf.into_pyarray(py).to_owned().into())
+        }
+
+        fn read_vdf_sparse_f32(
+            &self,
+            cid: usize,
+            pop: &str,
+        ) -> PyResult<std::collections::HashMap<usize, f32>> {
+            let map = self.inner.read_vdf_dict::<f32>(cid, pop).ok_or_else(|| {
+                PyValueError::new_err(format!("VDF not found for cid={} pop='{}'", cid, pop))
+            })?;
+            Ok(map)
+        }
+
+        fn read_vdf_sparse_f64(
+            &self,
+            cid: usize,
+            pop: &str,
+        ) -> PyResult<std::collections::HashMap<usize, f64>> {
+            let map = self.inner.read_vdf_dict::<f64>(cid, pop).ok_or_else(|| {
+                PyValueError::new_err(format!("VDF not found for cid={} pop='{}'", cid, pop))
+            })?;
+            Ok(map)
         }
     }
 
