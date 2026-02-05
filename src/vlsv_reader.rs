@@ -54,7 +54,7 @@ pub mod mod_vlsv_reader {
     use memmap2::Mmap;
     use ndarray::{Array4, ArrayView1};
     use ndarray::{Axis, Order, s};
-    use num_traits::{Num, NumCast, Zero};
+    use num_traits::{Num, NumCast, ToPrimitive, Zero};
     use once_cell::sync::OnceCell;
     use regex::Regex;
     use serde::Deserialize;
@@ -1159,7 +1159,8 @@ pub mod mod_vlsv_reader {
                 + Default
                 + TypeTag
                 + std::cmp::PartialOrd
-                + Copy,
+                + Copy
+                + ToPrimitive,
         {
             let blockspercell = TryInto::<VlsvDataset>::try_into(
                 self.root()
@@ -1367,23 +1368,249 @@ pub mod mod_vlsv_reader {
                         );
                     }
 
+                    let (nvx, nvy, nvz) = self.get_vspace_mesh_bbox(pop)?;
+                    let extents = self.get_vspace_mesh_extents(pop)?;
+
+                    let dvx = (extents.3 - extents.0) / nvx as f64;
+                    let dvy = (extents.4 - extents.1) / nvy as f64;
+                    let dvz = (extents.5 - extents.2) / nvz as f64;
+
+                    let start_i = ((octree_state.bbox_lims[0] - extents.0) / dvx).round() as usize;
+                    let start_j = ((octree_state.bbox_lims[1] - extents.1) / dvy).round() as usize;
+                    let start_k = ((octree_state.bbox_lims[2] - extents.2) / dvz).round() as usize;
+                    let blocks_per_dim_x = nvx / wid;
+                    let blocks_per_dim_y = nvy / wid;
+
                     for (coord, &val) in decompressed_vdf.indexed_iter() {
-                        let (gi, gj, gk, _) = coord;
-                        vdf_map.insert(gi + nvx * (gj + nvy * gk), val);
+                        let (i, j, k, _) = coord;
+                        let gi = i + start_i;
+                        let gj = j + start_j;
+                        let gk = k + start_k;
+                        let block_i = gi / wid;
+                        let block_j = gj / wid;
+                        let block_k = gk / wid;
+                        let li = gi % wid;
+                        let lj = gj % wid;
+                        let lk = gk % wid;
+                        let linear_block_idx =
+                            block_i + blocks_per_dim_x * (block_j + blocks_per_dim_y * block_k);
+                        let local_id = li + wid * (lj + wid * lk);
+                        vdf_map.insert(local_id + (linear_block_idx * wid3), val);
                     }
                 }
 
                 #[cfg(not(no_nn))]
                 CompressionMethod::MLP | CompressionMethod::MLPMULTI => {
+                    let ntasks = self.get_writting_tasks()?;
+                    let mlp_bytes_per_rank_dset = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .mlp_bytes_per_rank
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+
+                    let mlp_clusters_per_rank_dset = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .mlp_clusters_per_rank
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+
+                    let mut mlp_bytes_per_rank: Vec<u64> =
+                        vec![0; mlp_bytes_per_rank_dset.arraysize];
+                    let mut mlp_clusters_per_rank: Vec<u64> =
+                        vec![0; mlp_clusters_per_rank_dset.arraysize];
+
+                    self.read_variable_into::<u64>(
+                        None,
+                        Some(mlp_bytes_per_rank_dset),
+                        &mut mlp_bytes_per_rank,
+                    );
+                    self.read_variable_into::<u64>(
+                        None,
+                        Some(mlp_clusters_per_rank_dset),
+                        &mut mlp_clusters_per_rank,
+                    );
+                    let nmlps: u64 = mlp_clusters_per_rank.iter().sum();
+                    let mut current_offset: u64 = 0;
+                    let scan_bytes_per_cell: Vec<u64> = mlp_bytes_per_rank
+                        .iter()
+                        .map(|&b| {
+                            let prev = current_offset;
+                            current_offset += b as u64;
+                            prev
+                        })
+                        .collect();
+
+                    let mut mlp_headers = vec![Header::default(); nmlps as usize];
+                    let mut nbytes_multi_mlp_case = Vec::new();
+                    let mut cnt = 0;
+                    let blockvariable = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .blockvariable
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+
+                    for i in 0..ntasks {
+                        let mut offset = 0;
+                        for _cluster in 0..mlp_clusters_per_rank[i] {
+                            let target_offset = scan_bytes_per_cell[i] + offset;
+                            let mut target_ds = blockvariable.clone();
+                            target_ds.offset += target_offset as usize;
+                            target_ds.arraysize = std::mem::size_of::<Header>();
+                            self.read_variable_into::<u8>(
+                                None,
+                                Some(target_ds),
+                                bytemuck::cast_slice_mut(&mut mlp_headers[cnt..cnt + 1]),
+                            );
+                            if nmlps > ntasks as u64 {
+                                nbytes_multi_mlp_case
+                                    .push(mlp_headers[cnt].total_size.try_into().unwrap());
+                            }
+                            offset += mlp_headers[cnt].total_size as u64;
+                            cnt += 1;
+                        }
+                    }
+
+                    let mut scan_bytes_per_cell = scan_bytes_per_cell;
+                    let mut current_nbytes = vec![0; mlp_bytes_per_rank.len()];
+                    if nmlps > ntasks as u64 {
+                        current_nbytes = nbytes_multi_mlp_case;
+                        let mut current_offset: u64 = 0;
+                        scan_bytes_per_cell = current_nbytes
+                            .iter()
+                            .map(|&b| {
+                                let prev = current_offset;
+                                current_offset += b as u64;
+                                prev
+                            })
+                            .collect();
+                    }
+
+                    type CellID = u64;
+                    let mut mlp_cids: Vec<Vec<CellID>> = vec![Vec::new(); nmlps as usize];
+                    let mut cnt = 0;
+
+                    for i in 0..ntasks {
+                        for _cluster in 0..mlp_clusters_per_rank[i] {
+                            let cols = mlp_headers[cnt].cols;
+                            mlp_cids[cnt].resize(cols, 0 as CellID);
+                            let target_offset =
+                                scan_bytes_per_cell[cnt] + std::mem::size_of::<Header>() as u64;
+
+                            let mut target_ds = blockvariable.clone();
+                            target_ds.offset += target_offset as usize;
+                            target_ds.arraysize = cols * std::mem::size_of::<CellID>();
+                            self.read_variable_into::<CellID>(
+                                None,
+                                Some(target_ds),
+                                &mut mlp_cids[cnt],
+                            );
+
+                            cnt += 1;
+                        }
+                    }
+
+                    let cellswithblocks = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .cellswithblocks
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+
+                    let mut cids_with_blocks: Vec<usize> = vec![0; cellswithblocks.arraysize];
+                    self.read_variable_into::<usize>(
+                        None,
+                        Some(cellswithblocks),
+                        &mut cids_with_blocks,
+                    );
+
+                    let target_mlp = cids_with_blocks
+                        .iter()
+                        .find_map(|&cid| {
+                            mlp_cids
+                                .iter()
+                                .position(|cand_vec| cand_vec.contains(&(cid as u64)))
+                        })
+                        .unwrap();
+
+                    let fourier_order =
+                        self.read_scalar_parameter("FOURIER_ORDER").unwrap() as usize;
+                    let mlp_arch_dset = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .mlp_arch
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+                    let mut mlp_arch: Vec<i64> = vec![0; mlp_arch_dset.arraysize];
+                    self.read_variable_into::<i64>(None, Some(mlp_arch_dset), &mut mlp_arch);
+                    let mlp_arch_usize: Vec<usize> = mlp_arch.iter().map(|&x| x as usize).collect();
+                    let mut target_ds = blockvariable.clone();
+                    target_ds.offset += scan_bytes_per_cell[target_mlp] as usize;
+                    target_ds.arraysize = mlp_headers[target_mlp].total_size;
+                    let mut mlp_bytes = vec![u8::zero(); mlp_headers[target_mlp].total_size];
+                    self.read_variable_into::<u8>(None, Some(target_ds), &mut mlp_bytes);
+                    let mut phasespace = PhaseSpaceUnion::<f32>::new_from_buffer(&mlp_bytes)
+                        .expect("Could deserialize phasespace");
+                    phasespace.decompress(&mlp_arch_usize, fourier_order);
+                    phasespace.unnormalize_and_unscale(<f32 as NumCast>::from(sparse).unwrap());
                     let bbox = self.get_vspace_mesh_bbox(pop).unwrap();
                     let extent = self.get_vspace_mesh_extents(pop).unwrap();
                     let dv = (extent.3 - extent.0) / bbox.0 as f64;
-                    let vdf = phasespace.reconstruct_vdf_dense(cid, dv as f32);
-                    let vdf_t = vdf.mapv(|val| T::from(val).unwrap());
+                    let (nvx, nvy, nvz) = self.get_vspace_mesh_bbox(pop).unwrap();
+                    let global_extents = self.get_vspace_mesh_extents(pop).unwrap();
+                    let dvx = (global_extents.3.to_f64().unwrap()
+                        - global_extents.0.to_f64().unwrap())
+                        / nvx as f64;
+                    let dvy = (global_extents.4.to_f64().unwrap()
+                        - global_extents.1.to_f64().unwrap())
+                        / nvy as f64;
+                    let dvz = (global_extents.5.to_f64().unwrap()
+                        - global_extents.2.to_f64().unwrap())
+                        / nvz as f64;
 
+                    let start_i = ((phasespace.v_limits[0] as f64
+                        - global_extents.0.to_f64().unwrap())
+                        / dvx)
+                        .round() as usize;
+                    let start_j = ((phasespace.v_limits[1] as f64
+                        - global_extents.1.to_f64().unwrap())
+                        / dvy)
+                        .round() as usize;
+                    let start_k = ((phasespace.v_limits[2] as f64
+                        - global_extents.2.to_f64().unwrap())
+                        / dvz)
+                        .round() as usize;
+                    let vdf = phasespace.reconstruct_vdf_dense(cid, dvx as f32);
+                    let vdf_t = vdf.mapv(|val| T::from(val).unwrap());
+                    let blocks_per_row = nvx / wid;
+                    let blocks_per_layer = (nvx / wid) * (nvy / wid);
                     for (coord, &val) in vdf_t.indexed_iter() {
-                        let (gi, gj, gk, _) = coord;
-                        vdf_map.insert(gi + nvx * (gj + nvy * gk), val);
+                        let (i, j, k, _) = coord;
+                        let gi = i + start_i;
+                        let gj = j + start_j;
+                        let gk = k + start_k;
+                        let block_i = gi / wid;
+                        let block_j = gj / wid;
+                        let block_k = gk / wid;
+                        let li = gi % wid;
+                        let lj = gj % wid;
+                        let lk = gk % wid;
+                        let bid =
+                            block_i + (block_j * blocks_per_row) + (block_k * blocks_per_layer);
+                        let local_id = li + wid * (lj + wid * lk);
+                        vdf_map.insert(local_id + (bid * wid3), val);
                     }
                 }
 
