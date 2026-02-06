@@ -158,7 +158,12 @@ fn main() {
                             vzmin + (k as f64 + 0.5 + urand()) * dvz,
                         )
                     };
-                    let thermal_circle_dist: f64 = (vx.powi(2) + vy.powi(2) + vz.powi(2)).sqrt();
+                    let thermal_circle_dist: f64 = if !VDF_SHIFT {
+                        ((vx - vg_v[0]).powi(2) + (vy - vg_v[1]).powi(2) + (vz - vg_v[2]).powi(2))
+                            .sqrt()
+                    } else {
+                        (vx.powi(2) + vy.powi(2) + vz.powi(2)).sqrt()
+                    };
                     let retval = match SAMPLE_SCHEME {
                         SAMPLING::IN => {
                             if THERMAL_RADIOUS > thermal_circle_dist {
