@@ -2228,11 +2228,13 @@ pub mod mod_vlsv_reader {
                 })
                 .collect::<Vec<usize>>();
             let base_byte_offset = info.offset;
+            let v_size = info.vectorsize;
             let mut retval = Vec::<T>::with_capacity(indices.len());
             unsafe { retval.set_len(indices.len()) };
+
             retval.iter_mut().zip(indices).for_each(|(x, index)| {
-                info.offset =
-                    base_byte_offset + (index + component.unwrap_or(0) as usize) * info.datasize;
+                info.offset = base_byte_offset
+                    + (index * v_size + component.unwrap() as usize) * info.datasize;
                 info.arraysize = 1;
                 info.vectorsize = 1;
                 self.read_variable_into::<T>(None, Some(info.clone()), std::slice::from_mut(x));

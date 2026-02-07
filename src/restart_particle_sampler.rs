@@ -36,7 +36,7 @@ const YMAX: f64 = 1000.0;
 const ZMIN: f64 = -1000.0;
 const ZMAX: f64 = 1000.0;
 const SAMPLE_SCHEME: SAMPLING = SAMPLING::IN;
-const THERMAL_RADIOUS: f64 = 550.0;
+const THERMAL_RADIOUS: f64 = 75000.0;
 const VDF_SHIFT: bool = false;
 
 struct Particle {
@@ -123,13 +123,13 @@ fn main() {
                 return Vec::<Option<Particle>>::new();
             }
             let vg_v_x = f
-                .read_vg_variable_at::<f64>("moments_r", Some(0), &[cid])
-                .expect("Could not read moments");
-            let vg_v_y = f
                 .read_vg_variable_at::<f64>("moments_r", Some(1), &[cid])
                 .expect("Could not read moments");
-            let vg_v_z = f
+            let vg_v_y = f
                 .read_vg_variable_at::<f64>("moments_r", Some(2), &[cid])
+                .expect("Could not read moments");
+            let vg_v_z = f
+                .read_vg_variable_at::<f64>("moments_r", Some(3), &[cid])
                 .expect("Could not read moments");
             let vg_v = [vg_v_x[0], vg_v_y[0], vg_v_z[0]];
 
@@ -164,45 +164,24 @@ fn main() {
                     } else {
                         (vx.powi(2) + vy.powi(2) + vz.powi(2)).sqrt()
                     };
-                    let retval = match SAMPLE_SCHEME {
-                        SAMPLING::IN => {
-                            if THERMAL_RADIOUS > thermal_circle_dist {
-                                Some(Particle {
-                                    x: coords[0] as f32,
-                                    y: coords[1] as f32,
-                                    z: coords[2] as f32,
-                                    vx: vx as f32,
-                                    vy: vy as f32,
-                                    vz: vz as f32,
-                                })
-                            } else {
-                                None
-                            }
-                        }
-                        SAMPLING::OUT => {
-                            if THERMAL_RADIOUS < thermal_circle_dist {
-                                Some(Particle {
-                                    x: coords[0] as f32,
-                                    y: coords[1] as f32,
-                                    z: coords[2] as f32,
-                                    vx: vx as f32,
-                                    vy: vy as f32,
-                                    vz: vz as f32,
-                                })
-                            } else {
-                                None
-                            }
-                        }
-                        SAMPLING::FULL => Some(Particle {
+                    let keep = match SAMPLE_SCHEME {
+                        SAMPLING::IN => thermal_circle_dist < THERMAL_RADIOUS,
+                        SAMPLING::OUT => thermal_circle_dist > THERMAL_RADIOUS,
+                        SAMPLING::FULL => true,
+                    };
+
+                    if keep {
+                        Some(Particle {
                             x: coords[0] as f32,
                             y: coords[1] as f32,
                             z: coords[2] as f32,
                             vx: vx as f32,
                             vy: vy as f32,
                             vz: vz as f32,
-                        }),
-                    };
-                    retval
+                        })
+                    } else {
+                        None
+                    }
                 })
                 .collect::<Vec<Option<Particle>>>()
         })
