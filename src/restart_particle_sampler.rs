@@ -186,11 +186,12 @@ fn main() {
                 .collect::<Vec<Option<Particle>>>()
         })
         .collect();
-    println!("Sampled {} particles", particles.len());
     let file = File::create("lucky_particles.txt").expect("Could not open output file");
     let mut writer = BufWriter::new(file);
+    let mut nparticles = 0;
     for particle in &particles {
         if let Some(p) = particle {
+            nparticles += 1;
             writeln!(
                 writer,
                 "{},{},{},{},{},{},{}",
@@ -199,4 +200,5 @@ fn main() {
             .expect("Could not write the particle file!");
         }
     }
+    println!("Sampled {} particles", nparticles);
 }
