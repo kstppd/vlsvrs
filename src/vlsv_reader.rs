@@ -734,6 +734,31 @@ pub mod mod_vlsv_reader {
             )
         }
 
+        pub fn get_vdf_float_datasize(&self, pop: &str) -> Option<usize> {
+            let blockvariable = TryInto::<VlsvDataset>::try_into(
+                self.root()
+                    .blockvariable
+                    .as_ref()?
+                    .iter()
+                    .find(|v| v.name.as_deref() == Some(pop))?,
+            )
+            .ok()?;
+            let compression_used = blockvariable
+                .compression
+                .clone()
+                .unwrap_or(CompressionMethod::NONE);
+            let datasize = match compression_used {
+                CompressionMethod::NONE => blockvariable.datasize as usize,
+                CompressionMethod::ZFP
+                | CompressionMethod::OCTREE
+                | CompressionMethod::MLPMULTI
+                | CompressionMethod::MLP => {
+                    self.read_scalar_parameter("VDF_BYTE_SIZE").unwrap() as usize
+                }
+            };
+            Some(datasize)
+        }
+
         pub fn get_all_populations(&self) -> Option<Vec<&str>> {
             Some(
                 self.root()
@@ -4803,6 +4828,36 @@ pub mod mod_vlsv_py_exports {
             self.inner.get_vspace_mesh_extents(pop)
         }
 
+        fn read_variable<'py>(
+            &self,
+            py: Python<'py>,
+            variable: &str,
+            op: Option<i32>,
+        ) -> PyResult<PyObject> {
+            let ds = self
+                .inner
+                .get_dataset(variable)
+                .expect("Variable not found");
+            match ds.datasize {
+                4 => {
+                    let arr: Array4<f32> = map_opt(
+                        self.inner.read_variable::<f32>(variable, op),
+                        format!("variable '{}' not found", variable),
+                    )?;
+                    Ok(arr.into_pyarray(py).to_owned().into())
+                }
+                8 => {
+                    let arr: Array4<f64> = map_opt(
+                        self.inner.read_variable::<f64>(variable, op),
+                        format!("variable '{}' not found", variable),
+                    )?;
+                    Ok(arr.into_pyarray(py).to_owned().into())
+                }
+                _ => {
+                    panic!("Type not recognized!")
+                }
+            }
+        }
         fn read_variable_f32<'py>(
             &self,
             py: Python<'py>,
@@ -4827,6 +4882,48 @@ pub mod mod_vlsv_py_exports {
                 format!("variable '{}' not found", variable),
             )?;
             Ok(arr.into_pyarray(py).to_owned().into())
+        }
+
+        fn read_vg_variable_at<'py>(
+            &self,
+            py: Python<'py>,
+            variable: &str,
+            comp: Option<i32>,
+            cid: Vec<usize>,
+        ) -> PyResult<PyObject> {
+            let ds = self
+                .inner
+                .get_dataset(variable)
+                .expect("Variable not found");
+            match ds.datasize {
+                4 => {
+                    let vals: Vec<f32> = self
+                        .inner
+                        .read_vg_variable_at::<f32>(variable, comp, &cid)
+                        .ok_or_else(|| {
+                            PyValueError::new_err(format!(
+                                "Variable '{}' or CellIDs {:?} not found",
+                                variable, cid
+                            ))
+                        })?;
+                    Ok(PyArray1::from_vec(py, vals).to_owned().into())
+                }
+                8 => {
+                    let vals: Vec<f64> = self
+                        .inner
+                        .read_vg_variable_at::<f64>(variable, comp, &cid)
+                        .ok_or_else(|| {
+                            PyValueError::new_err(format!(
+                                "Variable '{}' or CellIDs {:?} not found",
+                                variable, cid
+                            ))
+                        })?;
+                    Ok(PyArray1::from_vec(py, vals).to_owned().into())
+                }
+                _ => {
+                    panic!("Type not recognized!")
+                }
+            }
         }
 
         fn read_vg_variable_at_f32<'py>(
@@ -4865,6 +4962,29 @@ pub mod mod_vlsv_py_exports {
                     ))
                 })?;
             Ok(PyArray1::from_vec(py, vals).to_owned().into())
+        }
+
+        fn read_vdf<'py>(&self, py: Python<'py>, cid: usize, pop: &str) -> PyResult<PyObject> {
+            let dtype = self.inner.get_vdf_float_datasize(pop).unwrap();
+            match dtype {
+                4 => {
+                    let arr: Array4<f32> = map_opt(
+                        self.inner.read_vdf::<f32>(cid, pop),
+                        format!("VDF not found for cid={} pop='{}'", cid, pop),
+                    )?;
+                    Ok(arr.into_pyarray(py).to_owned().into())
+                }
+                8 => {
+                    let arr: Array4<f64> = map_opt(
+                        self.inner.read_vdf::<f64>(cid, pop),
+                        format!("VDF not found for cid={} pop='{}'", cid, pop),
+                    )?;
+                    Ok(arr.into_pyarray(py).to_owned().into())
+                }
+                _ => {
+                    panic!("VDF type not recognized!")
+                }
+            }
         }
 
         fn read_vdf_f32<'py>(
@@ -4958,8 +5078,6 @@ pub mod mod_vlsv_py_exports {
             vymax: f64,
             vzmax: f64,
         ) -> PyResult<Py<PyArray4<f32>>> {
-            // debug_assert!(!target.is_null(), "target Grid is NULL");
-            // let target: &mut Grid<f32> = unsafe { &mut *target };
             let mut vdf: Array4<f32> = Array4::<f32>::zeros((nx, ny, nz, 1));
             let new_extents = (vxmin, vymin, vzmin, vxmax, vymax, vzmax);
             self.inner.read_vdf_into(cid, pop, &mut vdf, new_extents);
@@ -4985,6 +5103,33 @@ pub mod mod_vlsv_py_exports {
             let new_extents = (vxmin, vymin, vzmin, vxmax, vymax, vzmax);
             self.inner.read_vdf_into(cid, pop, &mut vdf, new_extents);
             Ok(vdf.into_pyarray(py).to_owned().into())
+        }
+
+        fn read_vdf_sparse(&self, py: Python<'_>, cid: usize, pop: &str) -> PyResult<PyObject> {
+            let dtype = self.inner.get_vdf_float_datasize(pop).unwrap();
+            match dtype {
+                4 => {
+                    let map = self.inner.read_vdf_dict::<f32>(cid, pop).ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "VDF not found for cid={} pop='{}'",
+                            cid, pop
+                        ))
+                    })?;
+                    Ok(map.into_pyobject(py)?.into_any().unbind())
+                }
+                8 => {
+                    let map = self.inner.read_vdf_dict::<f64>(cid, pop).ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "VDF not found for cid={} pop='{}'",
+                            cid, pop
+                        ))
+                    })?;
+                    Ok(map.into_pyobject(py)?.into_any().unbind())
+                }
+                _ => {
+                    panic!("VDF type not recognized!")
+                }
+            }
         }
 
         fn read_vdf_sparse_f32(
