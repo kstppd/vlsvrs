@@ -18,6 +18,21 @@ typedef struct {
   double xmax;
   double ymax;
   double zmax;
+  void *data;
+  size_t datasize;  
+} VLSVRS_GenericGrid;
+
+typedef struct {
+  size_t nx;
+  size_t ny;
+  size_t nz;
+  size_t nc;
+  double xmin;
+  double ymin;
+  double zmin;
+  double xmax;
+  double ymax;
+  double zmax;
   float *data;
 } VLSVRS_Grid32;
 
@@ -35,8 +50,10 @@ typedef struct {
   double *data;
 } VLSVRS_Grid64;
 
+VLSVRS_GenericGrid read_var(const char *fname, const char *varname, int op);
 VLSVRS_Grid32 read_var_32(const char *fname, const char *varname, int op);
 VLSVRS_Grid64 read_var_64(const char *fname, const char *varname, int op);
+VLSVRS_GenericGrid read_vdf(const char *fname, const char *pop, size_t cid);
 VLSVRS_Grid32 read_vdf_32(const char *fname, const char *pop, size_t cid);
 VLSVRS_Grid64 read_vdf_64(const char *fname, const char *pop, size_t cid);
 void read_vdf_into_32(const char *fname, const char *pop, size_t cid,

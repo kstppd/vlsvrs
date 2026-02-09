@@ -1216,7 +1216,6 @@ pub mod mod_vlsv_reader {
 
             let wid = self.get_wid(pop)?;
             let wid3 = wid.pow(3);
-            let (nvx, nvy, nvz) = self.get_vspace_mesh_bbox(pop)?;
             let mut cids_with_blocks: Vec<usize> = vec![0; cellswithblocks.arraysize];
             let mut blocks_per_cell: Vec<u32> = vec![0; blockspercell.arraysize];
             self.read_variable_into::<usize>(
@@ -1590,9 +1589,6 @@ pub mod mod_vlsv_reader {
                         .expect("Could deserialize phasespace");
                     phasespace.decompress(&mlp_arch_usize, fourier_order);
                     phasespace.unnormalize_and_unscale(<f32 as NumCast>::from(sparse).unwrap());
-                    let bbox = self.get_vspace_mesh_bbox(pop).unwrap();
-                    let extent = self.get_vspace_mesh_extents(pop).unwrap();
-                    let dv = (extent.3 - extent.0) / bbox.0 as f64;
                     let (nvx, nvy, nvz) = self.get_vspace_mesh_bbox(pop).unwrap();
                     let global_extents = self.get_vspace_mesh_extents(pop).unwrap();
                     let dvx = (global_extents.3.to_f64().unwrap()
@@ -2232,7 +2228,7 @@ pub mod mod_vlsv_reader {
         >(
             &self,
             name: &str,
-            component: Option<i32>, // Note: If returning full vector, this might be ignored or used as start
+            _component: Option<i32>,
             cid: &[usize],
         ) -> Option<Vec<T>> {
             let mut info = self.get_dataset(name)?;
@@ -2305,7 +2301,7 @@ pub mod mod_vlsv_reader {
         pub fn read_vg_variable_at_as_ref_dyn<'a, T>(
             &'a self,
             name: &str,
-            component: Option<i32>,
+            _component: Option<i32>,
             cid: &[usize],
             hint: &mut [usize],
         ) -> Option<Vec<&'a [u8]>>
@@ -4501,8 +4497,7 @@ pub mod mod_vlsv_tracing {
             let v_fields = match v_fields_opt {
                 Some(v) => v,
                 None => {
-                    let mut dead = gc.clone();
-                    dead.alive = false;
+                    gc.alive = false;
                     return;
                 }
             };
@@ -4535,8 +4530,24 @@ pub mod mod_vlsv_tracing {
 pub mod mod_vlsv_c_exports {
     use super::mod_vlsv_reader::VlsvFile;
     use ndarray::Array4;
-    use std::ffi::CStr;
+    use std::ffi::{CStr, c_void};
     use std::os::raw::c_char;
+
+    #[repr(C)]
+    pub struct GenericGrid {
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        nc: usize,
+        xmin: f64,
+        ymin: f64,
+        zmin: f64,
+        xmax: f64,
+        ymax: f64,
+        zmax: f64,
+        data: *mut c_void,
+        datasize: usize,
+    }
 
     #[repr(C)]
     pub struct Grid<T> {
@@ -4575,6 +4586,30 @@ pub mod mod_vlsv_c_exports {
         }
     }
 
+    impl GenericGrid {
+        pub fn new(
+            meshsize: (usize, usize, usize, usize),
+            extents: (f64, f64, f64, f64, f64, f64),
+            data: *mut c_void,
+            datasize: usize,
+        ) -> Self {
+            Self {
+                nx: meshsize.0,
+                ny: meshsize.1,
+                nz: meshsize.2,
+                nc: meshsize.3,
+                xmin: extents.0,
+                ymin: extents.1,
+                zmin: extents.2,
+                xmax: extents.3,
+                ymax: extents.4,
+                zmax: extents.5,
+                data,
+                datasize,
+            }
+        }
+    }
+
     /************************* C Bindings *********************************/
     #[unsafe(export_name = "get_wid")]
     pub unsafe fn get_wid(filename: *const c_char, popname: *const c_char) -> usize {
@@ -4582,6 +4617,50 @@ pub mod mod_vlsv_c_exports {
         let pop = unsafe { CStr::from_ptr(popname).to_str().unwrap() };
         let f = VlsvFile::new(name).unwrap();
         return f.get_wid(pop).expect("ERROR: could not get WID for {name}");
+    }
+
+    #[unsafe(export_name = "read_var")]
+    pub unsafe fn read_var(
+        filename: *const c_char,
+        varname: *const c_char,
+        op: i32,
+    ) -> GenericGrid {
+        let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
+        let var = unsafe { CStr::from_ptr(varname).to_str().unwrap() };
+        let f = VlsvFile::new(name).unwrap();
+        let ds = f.get_dataset(var).expect("Variable not found");
+        let retval = match ds.datasize {
+            4 => {
+                let var: Array4<f32> = f.read_variable::<f32>(var, Some(op)).unwrap();
+                let dims = var.dim();
+                let mut vec = var.into_raw_vec_and_offset().0;
+                let ptr = vec.as_mut_ptr();
+                std::mem::forget(vec);
+                GenericGrid::new(
+                    dims,
+                    f.get_spatial_mesh_extents().unwrap(),
+                    ptr as *mut c_void,
+                    4,
+                )
+            }
+            8 => {
+                let var: Array4<f64> = f.read_variable::<f64>(var, Some(op)).unwrap();
+                let dims = var.dim();
+                let mut vec = var.into_raw_vec_and_offset().0;
+                let ptr = vec.as_mut_ptr();
+                std::mem::forget(vec);
+                GenericGrid::new(
+                    dims,
+                    f.get_spatial_mesh_extents().unwrap(),
+                    ptr as *mut c_void,
+                    8,
+                )
+            }
+            _ => {
+                panic!("Unable to create generic grid with this type")
+            }
+        };
+        retval
     }
 
     #[unsafe(export_name = "read_var_32")]
@@ -4656,6 +4735,44 @@ pub mod mod_vlsv_c_exports {
         let ptr = vec.as_mut_ptr();
         std::mem::forget(vec);
         Grid::<f64>::new(dims, f.get_spatial_mesh_extents().unwrap(), ptr)
+    }
+
+    #[unsafe(export_name = "read_vdf")]
+    pub unsafe fn read_vdf(filename: *const c_char, pop: *const c_char, cid: usize) -> GenericGrid {
+        let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
+        let pop = unsafe { CStr::from_ptr(pop).to_str().unwrap() };
+        let f = VlsvFile::new(name).unwrap();
+        match f.get_vdf_float_datasize(pop).unwrap() {
+            4 => {
+                let var: Array4<f32> = f.read_vdf::<f32>(cid, pop).unwrap();
+                let dims = var.dim();
+                let mut vec = var.into_raw_vec_and_offset().0;
+                let ptr = vec.as_mut_ptr();
+                std::mem::forget(vec);
+                GenericGrid::new(
+                    dims,
+                    f.get_vspace_mesh_extents(pop).unwrap(),
+                    ptr as *mut c_void,
+                    4,
+                )
+            }
+            8 => {
+                let var: Array4<f64> = f.read_vdf::<f64>(cid, pop).unwrap();
+                let dims = var.dim();
+                let mut vec = var.into_raw_vec_and_offset().0;
+                let ptr = vec.as_mut_ptr();
+                std::mem::forget(vec);
+                GenericGrid::new(
+                    dims,
+                    f.get_vspace_mesh_extents(pop).unwrap(),
+                    ptr as *mut c_void,
+                    8,
+                )
+            }
+            _ => {
+                panic!("Unable to create generic grid with this type")
+            }
+        }
     }
 
     #[unsafe(export_name = "read_vdf_32")]
