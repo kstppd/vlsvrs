@@ -2232,7 +2232,7 @@ pub mod mod_vlsv_reader {
         >(
             &self,
             name: &str,
-            component: Option<i32>,
+            component: Option<i32>, // Note: If returning full vector, this might be ignored or used as start
             cid: &[usize],
         ) -> Option<Vec<T>> {
             let mut info = self.get_dataset(name)?;
@@ -2252,18 +2252,22 @@ pub mod mod_vlsv_reader {
                         .expect("Failed to find cellid {cand}")
                 })
                 .collect::<Vec<usize>>();
+
             let base_byte_offset = info.offset;
             let v_size = info.vectorsize;
-            let mut retval = Vec::<T>::with_capacity(indices.len());
-            unsafe { retval.set_len(indices.len()) };
+            let total_elements = indices.len() * v_size;
+            let mut retval = Vec::<T>::with_capacity(total_elements);
+            unsafe { retval.set_len(total_elements) };
 
-            retval.iter_mut().zip(indices).for_each(|(x, index)| {
-                info.offset = base_byte_offset
-                    + (index * v_size + component.unwrap() as usize) * info.datasize;
-                info.arraysize = 1;
-                info.vectorsize = 1;
-                self.read_variable_into::<T>(None, Some(info.clone()), std::slice::from_mut(x));
-            });
+            retval
+                .chunks_mut(v_size)
+                .zip(indices)
+                .for_each(|(slice, index)| {
+                    info.offset = base_byte_offset + (index * v_size) * info.datasize;
+                    info.arraysize = 1;
+                    info.vectorsize = v_size;
+                    self.read_variable_into::<T>(None, Some(info.clone()), slice);
+                });
             Some(retval)
         }
 
@@ -2341,11 +2345,10 @@ pub mod mod_vlsv_reader {
             }
             hint.copy_from_slice(&indices);
             let stride_bytes = info.datasize * info.vectorsize;
-            let comp = component.unwrap_or(0) as usize;
             let mut retval = Vec::with_capacity(indices.len());
             for idx in indices {
-                let off = info.offset + idx * stride_bytes + comp * info.datasize;
-                retval.push(&self.memorymap()[off..off + info.datasize]);
+                let off = info.offset + idx * stride_bytes;
+                retval.push(&self.memorymap()[off..off + stride_bytes]);
             }
             Some(retval)
         }
@@ -2353,7 +2356,7 @@ pub mod mod_vlsv_reader {
         pub fn read_vg_variable_at_as_ref_const<'a, T, const N: usize>(
             &'a self,
             name: &str,
-            component: Option<i32>,
+            _component: Option<i32>,
             cid: &[usize; N],
             hint: &mut [usize; N],
         ) -> Option<[&'a [u8]; N]>
@@ -2378,6 +2381,7 @@ pub mod mod_vlsv_reader {
                 [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
             let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
                 .expect("CELLIDS misaligned or wrong length");
+
             let indices: [usize; N] = core::array::from_fn(|i| {
                 let target = cid[i] as u64;
                 let h = hint[i];
@@ -2387,11 +2391,10 @@ pub mod mod_vlsv_reader {
 
             hint.copy_from_slice(&indices);
             let stride_bytes = info.datasize * info.vectorsize;
-            let comp = component.unwrap_or(0) as usize;
             let out: [&'a [u8]; N] = core::array::from_fn(|i| {
                 let idx = indices[i];
-                let off = info.offset + idx * stride_bytes + comp * info.datasize;
-                &self.memorymap()[off..off + info.datasize]
+                let off = info.offset + idx * stride_bytes;
+                &self.memorymap()[off..off + stride_bytes]
             });
             Some(out)
         }
