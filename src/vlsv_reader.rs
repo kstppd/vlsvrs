@@ -2177,7 +2177,7 @@ pub mod mod_vlsv_reader {
             name: &str,
             cid: usize,
         ) -> Option<T> {
-            let v = self.read_vg_variable_at_as_ref_dyn::<T>(name, Some(0), &[cid], &mut [0])?[0];
+            let v = self.read_vg_variable_at_as_ref_dyn::<T>(name, &[cid], &mut [0])?[0];
             let mut k: f32 = f32::zero();
             for chunk in v.chunks_exact(std::mem::size_of::<f32>()) {
                 k = pod_read_unaligned::<f32>(chunk);
@@ -2228,7 +2228,6 @@ pub mod mod_vlsv_reader {
         >(
             &self,
             name: &str,
-            _component: Option<i32>,
             cid: &[usize],
         ) -> Option<Vec<T>> {
             let mut info = self.get_dataset(name)?;
@@ -2301,7 +2300,6 @@ pub mod mod_vlsv_reader {
         pub fn read_vg_variable_at_as_ref_dyn<'a, T>(
             &'a self,
             name: &str,
-            _component: Option<i32>,
             cid: &[usize],
             hint: &mut [usize],
         ) -> Option<Vec<&'a [u8]>>
@@ -2352,7 +2350,6 @@ pub mod mod_vlsv_reader {
         pub fn read_vg_variable_at_as_ref_const<'a, T, const N: usize>(
             &'a self,
             name: &str,
-            _component: Option<i32>,
             cid: &[usize; N],
             hint: &mut [usize; N],
         ) -> Option<[&'a [u8]; N]>
@@ -5008,7 +5005,6 @@ pub mod mod_vlsv_py_exports {
             &self,
             py: Python<'py>,
             variable: &str,
-            comp: Option<i32>,
             cid: Vec<usize>,
         ) -> PyResult<PyObject> {
             let ds = self
@@ -5019,7 +5015,7 @@ pub mod mod_vlsv_py_exports {
                 4 => {
                     let vals: Vec<f32> = self
                         .inner
-                        .read_vg_variable_at::<f32>(variable, comp, &cid)
+                        .read_vg_variable_at::<f32>(variable, &cid)
                         .ok_or_else(|| {
                             PyValueError::new_err(format!(
                                 "Variable '{}' or CellIDs {:?} not found",
@@ -5031,7 +5027,7 @@ pub mod mod_vlsv_py_exports {
                 8 => {
                     let vals: Vec<f64> = self
                         .inner
-                        .read_vg_variable_at::<f64>(variable, comp, &cid)
+                        .read_vg_variable_at::<f64>(variable, &cid)
                         .ok_or_else(|| {
                             PyValueError::new_err(format!(
                                 "Variable '{}' or CellIDs {:?} not found",
@@ -5050,12 +5046,11 @@ pub mod mod_vlsv_py_exports {
             &self,
             py: Python<'py>,
             variable: &str,
-            comp: Option<i32>,
             cid: Vec<usize>,
         ) -> PyResult<Py<PyArray1<f32>>> {
             let vals: Vec<f32> = self
                 .inner
-                .read_vg_variable_at::<f32>(variable, comp, &cid)
+                .read_vg_variable_at::<f32>(variable, &cid)
                 .ok_or_else(|| {
                     PyValueError::new_err(format!(
                         "Variable '{}' or CellIDs {:?} not found",
@@ -5069,12 +5064,11 @@ pub mod mod_vlsv_py_exports {
             &self,
             py: Python<'py>,
             variable: &str,
-            comp: Option<i32>,
             cid: Vec<usize>,
         ) -> PyResult<Py<PyArray1<f64>>> {
             let vals: Vec<f64> = self
                 .inner
-                .read_vg_variable_at::<f64>(variable, comp, &cid)
+                .read_vg_variable_at::<f64>(variable, &cid)
                 .ok_or_else(|| {
                     PyValueError::new_err(format!(
                         "Variable '{}' or CellIDs {:?} not found",
@@ -5396,7 +5390,6 @@ pub mod mod_vlsv_py_exports {
         py: Python<'_>,
         filenames: Vec<String>,
         var: &str,
-        op: Option<i32>,
         cids: Vec<usize>,
     ) -> PyResult<Py<PyArray2<f32>>> {
         let n_files = filenames.len();
@@ -5406,7 +5399,7 @@ pub mod mod_vlsv_py_exports {
         let mut flat = vec![0f32; n_cids * n_files];
         for (fi, f) in fptrs.iter().enumerate() {
             let refs = f
-                .read_vg_variable_at_as_ref_dyn::<f32>(var, op, &cids, &mut hints)
+                .read_vg_variable_at_as_ref_dyn::<f32>(var, &cids, &mut hints)
                 .expect("PEBKAC");
             assert_eq!(refs.len(), n_cids);
 
@@ -5426,7 +5419,6 @@ pub mod mod_vlsv_py_exports {
         py: Python<'_>,
         filenames: Vec<String>,
         var: &str,
-        op: Option<i32>,
         cids: Vec<usize>,
     ) -> PyResult<Py<PyArray2<f64>>> {
         let n_files = filenames.len();
@@ -5436,7 +5428,7 @@ pub mod mod_vlsv_py_exports {
         let mut flat = vec![0f64; n_cids * n_files];
         for (fi, f) in fptrs.iter().enumerate() {
             let refs = f
-                .read_vg_variable_at_as_ref_dyn::<f64>(var, op, &cids, &mut hints)
+                .read_vg_variable_at_as_ref_dyn::<f64>(var, &cids, &mut hints)
                 .expect("PEBKAC");
             assert_eq!(refs.len(), n_cids);
 
