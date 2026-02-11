@@ -754,6 +754,7 @@ pub mod mod_vlsv_reader {
                 CompressionMethod::ZFP
                 | CompressionMethod::OCTREE
                 | CompressionMethod::MLPMULTI
+                | CompressionMethod::HERMITE
                 | CompressionMethod::MLP => {
                     self.read_scalar_parameter("VDF_BYTE_SIZE").unwrap() as usize
                 }
@@ -1258,6 +1259,9 @@ pub mod mod_vlsv_reader {
             let mut vdf_map = HashMap::with_capacity(1 << 20);
 
             match compression_used {
+                CompressionMethod::HERMITE => {
+                    todo!()
+                }
                 CompressionMethod::NONE | CompressionMethod::ZFP => {
                     let mut blocks: Vec<T> = vec![];
                     let vsamples = read_size * wid3;
@@ -1924,6 +1928,52 @@ pub mod mod_vlsv_reader {
                     });
                     Some(decompressed_vdf)
                 }
+                CompressionMethod::HERMITE => {
+                    let vdf_byte_size =
+                        self.read_scalar_parameter("VDF_BYTE_SIZE").unwrap() as usize;
+                    if vdf_byte_size != std::mem::size_of::<T>() {
+                        panic!(
+                            "This reader will not work for this combo of T and compressed VDF BYTE SIZE"
+                        );
+                    }
+                    let bytespercell = TryInto::<VlsvDataset>::try_into(
+                        self.root()
+                            .bytespercell
+                            .as_ref()?
+                            .iter()
+                            .find(|v| v.name.as_deref() == Some(pop))?,
+                    )
+                    .ok()?;
+                    let mut bytes_per_cell: Vec<u64> = vec![0; bytespercell.arraysize];
+                    self.read_variable_into::<u64>(None, Some(bytespercell), &mut bytes_per_cell);
+                    let index = cids_with_blocks.iter().position(|&v| v == cid)?;
+                    let read_size = bytes_per_cell[index] as usize;
+                    let read_offset = bytes_per_cell[..index]
+                        .iter()
+                        .map(|&x| x as usize)
+                        .sum::<usize>();
+                    let mut hermite_bytes: Vec<u8> = vec![0_u8; read_size];
+                    let blockvar_slice = slice_ds(&blockvariable, read_offset, read_size);
+                    self.read_variable_into::<u8>(None, Some(blockvar_slice), &mut hermite_bytes);
+                    let hermite_state = parse_hermite_state(&hermite_bytes);
+                    let decompressed_vdf = Array4::<f32>::from_shape_vec(
+                        [
+                            hermite_state.n_hermite_harmonic as usize,
+                            hermite_state.n_hermite_harmonic as usize,
+                            hermite_state.n_hermite_harmonic as usize,
+                            1,
+                        ],
+                        hermite_state.spectrum,
+                    )
+                    .unwrap();
+                    let mut vdf_t = decompressed_vdf.mapv(|val| T::from(val).unwrap());
+                    vdf_t.iter_mut().for_each(|val| {
+                        if *val < sparse {
+                            *val = T::zero();
+                        }
+                    });
+                    Some(vdf_t)
+                }
                 #[cfg(not(no_nn))]
                 CompressionMethod::MLP | CompressionMethod::MLPMULTI => {
                     let ntasks = self.get_writting_tasks()?;
@@ -2392,6 +2442,62 @@ pub mod mod_vlsv_reader {
                 &self.memorymap()[off..off + stride_bytes]
             });
             Some(out)
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct HermiteState {
+        pub n_hermite_harmonic: i32,
+        pub vth: f32,
+        pub u: [f32; 3],
+        pub spectrum: Vec<f32>,
+        pub v_limits: [f64; 6],
+        pub shape: [usize; 3],
+    }
+
+    fn take<const N: usize>(bytes: &[u8], i: &mut usize) -> [u8; N] {
+        let out: [u8; N] = bytes[*i..*i + N].try_into().unwrap();
+        *i += N;
+        out
+    }
+
+    pub fn parse_hermite_state(bytes: &[u8]) -> HermiteState {
+        let mut i = 0usize;
+
+        let n_hermite_harmonic = i32::from_le_bytes(take::<4>(bytes, &mut i));
+        let vth = f32::from_le_bytes(take::<4>(bytes, &mut i));
+
+        let u = [
+            f32::from_le_bytes(take::<4>(bytes, &mut i)),
+            f32::from_le_bytes(take::<4>(bytes, &mut i)),
+            f32::from_le_bytes(take::<4>(bytes, &mut i)),
+        ];
+
+        let size = u64::from_le_bytes(take::<8>(bytes, &mut i)) as usize;
+
+        let mut spectrum = Vec::with_capacity(size);
+        for _ in 0..size {
+            spectrum.push(f32::from_le_bytes(take::<4>(bytes, &mut i)));
+        }
+
+        let mut v_limits = [0.0f64; 6];
+        for k in 0..6 {
+            v_limits[k] = f64::from_le_bytes(take::<8>(bytes, &mut i));
+        }
+
+        let shape = [
+            usize::from_le_bytes(take::<8>(bytes, &mut i)),
+            usize::from_le_bytes(take::<8>(bytes, &mut i)),
+            usize::from_le_bytes(take::<8>(bytes, &mut i)),
+        ];
+        assert!(i == bytes.len(), "trailing bytes: {}", bytes.len() - i);
+        HermiteState {
+            n_hermite_harmonic,
+            vth,
+            u,
+            spectrum,
+            v_limits,
+            shape,
         }
     }
 
@@ -3272,6 +3378,7 @@ pub mod mod_vlsv_reader {
         OCTREE,
         MLP,
         MLPMULTI,
+        HERMITE,
     }
 
     impl std::str::FromStr for CompressionMethod {
@@ -3281,6 +3388,7 @@ pub mod mod_vlsv_reader {
                 "" | "NONE" => Ok(CompressionMethod::NONE),
                 "ZFP" => Ok(CompressionMethod::ZFP),
                 "OCTREE" => Ok(CompressionMethod::OCTREE),
+                "HERMITE" => Ok(CompressionMethod::HERMITE),
                 "MLP" => Ok(CompressionMethod::MLP),
                 "MLPMULTI" => Ok(CompressionMethod::MLPMULTI),
                 other => Err(format!("Unknown compression scheme: {other}")),
