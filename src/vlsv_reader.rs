@@ -527,8 +527,9 @@ pub mod mod_vlsv_reader {
                 0 => "NONE",
                 1 => "ZFP",
                 2 => "OCTREE",
-                3 => "MLPMULTI",
-                4 => "HERMITE",
+                3 => "MLP",
+                4 => "MLPMULTI",
+                5 => "HERMITE",
                 _ => "NONE",
             }
         }
