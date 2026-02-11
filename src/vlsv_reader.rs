@@ -524,11 +524,12 @@ pub mod mod_vlsv_reader {
                 .or(Some(4.0))
                 .unwrap() as i32;
             match comrpession {
-                0 => "MLPMULTI",
-                1 => "MLPMULTI",
-                2 => "ZFP",
-                3 => "OCTREE",
-                _ => "None",
+                0 => "NONE",
+                1 => "ZFP",
+                2 => "OCTREE",
+                3 => "MLPMULTI",
+                4 => "HERMITE",
+                _ => "NONE",
             }
         }
 
