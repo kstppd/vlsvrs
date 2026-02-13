@@ -54,7 +54,7 @@ pub mod mod_vlsv_reader {
     use memmap2::Mmap;
     use ndarray::{Array4, ArrayView1};
     use ndarray::{Axis, Order, s};
-    use num_traits::{Num, NumCast, ToPrimitive, Zero};
+    use num_traits::{Float, FromPrimitive, Num, NumCast, ToPrimitive, Zero};
     use once_cell::sync::OnceCell;
     use regex::Regex;
     use serde::Deserialize;
@@ -521,7 +521,7 @@ pub mod mod_vlsv_reader {
         pub fn read_compression(&self) -> &str {
             let comrpession = self
                 .read_scalar_parameter("COMPRESSION")
-                .or(Some(4.0))
+                .or(Some(0.0))
                 .unwrap() as i32;
             match comrpession {
                 0 => "NONE",
@@ -1247,10 +1247,6 @@ pub mod mod_vlsv_reader {
                     sub
                 };
 
-            let sparse: T = self
-                .read_sparsity(pop, cid)
-                .unwrap_or(T::from(1e-16).unwrap());
-
             let compression_used = blockvariable
                 .compression
                 .clone()
@@ -1262,6 +1258,7 @@ pub mod mod_vlsv_reader {
                 CompressionMethod::HERMITE => {
                     todo!()
                 }
+
                 CompressionMethod::NONE | CompressionMethod::ZFP => {
                     let mut blocks: Vec<T> = vec![];
                     let vsamples = read_size * wid3;
@@ -1663,7 +1660,10 @@ pub mod mod_vlsv_reader {
                 + std::iter::Sum
                 + Default
                 + TypeTag
-                + std::cmp::PartialOrd,
+                + Float
+                + ndarray::ScalarOperand
+                + std::cmp::PartialOrd
+                + std::fmt::Debug,
         {
             let blockspercell = TryInto::<VlsvDataset>::try_into(
                 self.root()
@@ -1956,21 +1956,15 @@ pub mod mod_vlsv_reader {
                     let blockvar_slice = slice_ds(&blockvariable, read_offset, read_size);
                     self.read_variable_into::<u8>(None, Some(blockvar_slice), &mut hermite_bytes);
                     let hermite_state = parse_hermite_state(&hermite_bytes);
-                    let decompressed_vdf = Array4::<f32>::from_shape_vec(
-                        [
-                            hermite_state.n_hermite_harmonic as usize,
-                            hermite_state.n_hermite_harmonic as usize,
-                            hermite_state.n_hermite_harmonic as usize,
-                            1,
-                        ],
-                        hermite_state.spectrum,
-                    )
-                    .unwrap();
-                    let mut vdf_t = decompressed_vdf.mapv(|val| T::from(val).unwrap());
-                    vdf_t.iter_mut().for_each(|val| {
-                        if *val < sparse {
-                            *val = T::zero();
-                        }
+                    let vdf = reconstruct_vdf::<f32>(&hermite_state);
+                    let mut vdf_t = vdf.mapv(|val| T::from(val).unwrap());
+                    let scale = T::from(0.1).unwrap();
+                    let factor = scale * sparse;
+                    let base = T::from(10.0).unwrap();
+                    let max_exponent = T::from(38.0).unwrap();
+                    vdf_t.map_inplace(|x| {
+                        let clamped_x = (*x).min(max_exponent);
+                        *x = factor * base.powf(clamped_x);
                     });
                     Some(vdf_t)
                 }
@@ -2182,7 +2176,10 @@ pub mod mod_vlsv_reader {
                 + std::iter::Sum
                 + Default
                 + TypeTag
-                + std::cmp::PartialOrd,
+                + std::cmp::PartialOrd
+                + Float
+                + ndarray::ScalarOperand
+                + std::fmt::Debug,
         {
             let vdf: Array4<T> = self.read_vdf::<T>(cid, pop)?;
             let src_extent = self.get_vspace_mesh_extents(pop)?;
@@ -2205,7 +2202,10 @@ pub mod mod_vlsv_reader {
                 + std::iter::Sum
                 + Default
                 + TypeTag
-                + std::cmp::PartialOrd,
+                + std::cmp::PartialOrd
+                + Float
+                + ndarray::ScalarOperand
+                + std::fmt::Debug,
         {
             let dst_extents = self.get_vspace_mesh_extents(pop)?;
 
@@ -2455,13 +2455,12 @@ pub mod mod_vlsv_reader {
         pub shape: [usize; 3],
     }
 
-    fn take<const N: usize>(bytes: &[u8], i: &mut usize) -> [u8; N] {
-        let out: [u8; N] = bytes[*i..*i + N].try_into().unwrap();
-        *i += N;
-        out
-    }
-
     pub fn parse_hermite_state(bytes: &[u8]) -> HermiteState {
+        fn take<const N: usize>(bytes: &[u8], i: &mut usize) -> [u8; N] {
+            let out: [u8; N] = bytes[*i..*i + N].try_into().unwrap();
+            *i += N;
+            out
+        }
         let mut i = 0usize;
 
         let n_hermite_harmonic = i32::from_le_bytes(take::<4>(bytes, &mut i));
@@ -2499,6 +2498,111 @@ pub mod mod_vlsv_reader {
             v_limits,
             shape,
         }
+    }
+
+    fn factorial_f64(n: usize) -> f64 {
+        (1..=n).fold(1.0f64, |acc, k| acc * (k as f64))
+    }
+
+    fn linspace_inclusive(a: f64, b: f64, n: usize) -> Vec<f64> {
+        if n == 0 {
+            return vec![];
+        }
+        if n == 1 {
+            return vec![a];
+        }
+        let step = (b - a) / ((n - 1) as f64);
+        (0..n).map(|i| a + step * (i as f64)).collect()
+    }
+
+    fn get_hermite_axis(
+        shape: [usize; 3],
+        v_limits: [f64; 6],
+        order: usize,
+        vth: f32,
+        u: [f32; 3],
+        axis: usize,
+    ) -> Vec<f32> {
+        let npts = shape[axis];
+        let vmin = v_limits[axis] as f32;
+        let vmax = v_limits[axis + 3] as f32;
+        let u_ax = u[axis];
+
+        let mut herm = vec![0f32; order * npts];
+        if order == 0 || npts == 0 {
+            return herm;
+        }
+
+        let inv_sqrt_vth_sqrt_pi = (vth * std::f32::consts::PI.sqrt()).sqrt().recip();
+
+        for i in 0..npts {
+            let v = if npts > 1 {
+                vmin + (vmax - vmin) * (i as f32 / (npts - 1) as f32)
+            } else {
+                vmin
+            };
+            let x = (v - u_ax) / vth;
+            let mut h_prev = 0.0f32;
+            let mut h_curr = inv_sqrt_vth_sqrt_pi;
+            herm[0 * npts + i] = h_curr;
+
+            for n in 1..order {
+                let n_f = n as f32;
+                let h_next =
+                    (x * 2.0f32.sqrt() * h_curr - (n_f - 1.0).sqrt() * h_prev) / n_f.sqrt();
+                h_prev = h_curr;
+                h_curr = h_next;
+                herm[n * npts + i] = h_curr;
+            }
+        }
+        herm
+    }
+
+    pub fn reconstruct_vdf<T>(state: &HermiteState) -> Array4<T>
+    where
+        T: Zero + FromPrimitive + Copy,
+    {
+        let order = state.n_hermite_harmonic as usize;
+        let [nxv, nyv, nzv] = state.shape;
+        let mut decompressed_vdf = Array4::<T>::zeros([nxv, nyv, nzv, 1]);
+        let hx = get_hermite_axis(state.shape, state.v_limits, order, state.vth, state.u, 0);
+        let hy = get_hermite_axis(state.shape, state.v_limits, order, state.vth, state.u, 1);
+        let hz = get_hermite_axis(state.shape, state.v_limits, order, state.vth, state.u, 2);
+        let o2 = order * order;
+        let mut tmp_xy = vec![0f32; order * order];
+        let mut tmp_x = vec![0f32; order];
+
+        for vz in 0..nzv {
+            for nx in 0..order {
+                for ny in 0..order {
+                    let base = nx * o2 + ny * order;
+                    let mut acc = 0f32;
+                    for nz in 0..order {
+                        acc += state.spectrum[base + nz] * hz[nz * nzv + vz];
+                    }
+                    tmp_xy[nx * order + ny] = acc;
+                }
+            }
+
+            for vy in 0..nyv {
+                for nx in 0..order {
+                    let mut acc = 0f32;
+                    for ny in 0..order {
+                        acc += tmp_xy[nx * order + ny] * hy[ny * nyv + vy];
+                    }
+                    tmp_x[nx] = acc;
+                }
+
+                for vx in 0..nxv {
+                    let mut acc = 0f32;
+                    for nx in 0..order {
+                        acc += tmp_x[nx] * hx[nx * nxv + vx];
+                    }
+                    decompressed_vdf[[vx, vy, vz, 0]] = T::from_f32(acc).expect("failed to cast");
+                }
+            }
+        }
+        decompressed_vdf
     }
 
     #[derive(Debug, Clone)]
