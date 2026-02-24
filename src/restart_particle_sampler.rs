@@ -58,7 +58,7 @@ fn main() {
     let velocity_mesh = f
         .get_vspace_mesh_extents("proton")
         .expect("Could not read vspace mesh extents");
-    let ncells = spatial_mesh.0 * spatial_mesh.1 * spatial_mesh.2;
+    let ncells = 1; //spatial_mesh.0 * spatial_mesh.1 * spatial_mesh.2;
 
     println!(
         "Sampling particles from {restart_file} [PPC={PPC} N={}].",
@@ -80,31 +80,21 @@ fn main() {
         .progress_chars("##-"),
     );
 
+    let target_cid = 356829833;
     let particles: Vec<Option<Particle>> = (1..=ncells)
         .into_par_iter()
         .filter(|&cid| (cid - 1) % STRIDE == 0)
         .flat_map(|cid| {
             let mut rng = rng();
             let coords = f
-                .get_cell_coordinate(cid as u64)
-                .expect("Could not read in coordinates for cid {cid}");
-            // let rho = ((coords[0] * coords[0] + coords[1] * coords[1] + coords[2] * coords[2])
-            //     .sqrt())
-            //     / RE;
-            // if rho < LSHELL_MIN || rho > LSHELL_MAX {
-            //     return Vec::<Particle>::new();
-            // }
+                .get_cell_coordinate(target_cid as u64)
+                .expect("Could not read in coordinates for target_cid {target_cid}");
             let x = coords[0] / RE;
             let y = coords[1] / RE;
             let z = coords[2] / RE;
-            let is_in_box = x > XMIN && x < XMAX && y > YMIN && y < YMAX && z > ZMIN && z < ZMAX;
-            if !is_in_box {
-                return Vec::<Option<Particle>>::new();
-            }
-
             let vdf = f
-                .read_vdf::<f32>(cid, "proton")
-                .expect("Could not read VDF from cid {cid}");
+                .read_vdf::<f32>(target_cid, "proton")
+                .expect("Could not read VDF from target_cid {target_cid}");
             let v3 = vdf.slice(s![.., .., .., 0]);
             let mut weights: Vec<f64> = Vec::with_capacity(nvx * nvy * nvz);
             let mut sum = 0.0f64;
@@ -122,11 +112,6 @@ fn main() {
             if sum <= 0.0 {
                 return Vec::<Option<Particle>>::new();
             }
-            let moments_r = f
-                .read_vg_variable_at::<f64>("moments_r", &[cid])
-                .expect("Could not read moments");
-
-            let vg_v = [moments_r[1], moments_r[2], moments_r[3]];
             let dist = WeightedIndex::new(&weights).unwrap();
             (0..PPC)
                 .map(|_| {
@@ -139,31 +124,13 @@ fn main() {
                     let j = rem / nvx;
                     let i = rem % nvx;
                     let mut urand = || -> f64 { rng.random::<f64>() - 0.5 };
-                    let (vx, vy, vz) = if VDF_SHIFT {
-                        (
-                            vxmin + (i as f64 + 0.5 + urand()) * dvx - vg_v[0],
-                            vymin + (j as f64 + 0.5 + urand()) * dvy - vg_v[1],
-                            vzmin + (k as f64 + 0.5 + urand()) * dvz - vg_v[2],
-                        )
-                    } else {
-                        (
-                            vxmin + (i as f64 + 0.5 + urand()) * dvx,
-                            vymin + (j as f64 + 0.5 + urand()) * dvy,
-                            vzmin + (k as f64 + 0.5 + urand()) * dvz,
-                        )
-                    };
-                    let thermal_circle_dist: f64 = if !VDF_SHIFT {
-                        ((vx - vg_v[0]).powi(2) + (vy - vg_v[1]).powi(2) + (vz - vg_v[2]).powi(2))
-                            .sqrt()
-                    } else {
-                        (vx.powi(2) + vy.powi(2) + vz.powi(2)).sqrt()
-                    };
-                    let keep = match SAMPLE_SCHEME {
-                        SAMPLING::IN => thermal_circle_dist < THERMAL_RADIOUS,
-                        SAMPLING::OUT => thermal_circle_dist > THERMAL_RADIOUS,
-                        SAMPLING::FULL => true,
-                    };
+                    let (vx, vy, vz) = (
+                        vxmin + (i as f64 + 0.5 + urand()) * dvx,
+                        vymin + (j as f64 + 0.5 + urand()) * dvy,
+                        vzmin + (k as f64 + 0.5 + urand()) * dvz,
+                    );
 
+                    let keep = true;
                     if keep {
                         Some(Particle {
                             x: coords[0] as f32,
