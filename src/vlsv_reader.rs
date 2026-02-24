@@ -4094,10 +4094,11 @@ pub mod mod_vlsv_tracing {
     }
 
     impl<T: PtrTrait> VlsvDynamicField<T> {
-        pub fn new(dir: &str, periodic: [bool; 3]) -> Self {
+        pub fn new(dir: &str, periodic: [bool; 3], tmin: f64, tmax: f64) -> Self {
             use indicatif::{ProgressBar, ProgressStyle};
             use rayon::prelude::*;
             use std::fs;
+
             let mut files: Vec<String> = fs::read_dir(dir)
                 .unwrap()
                 .filter_map(|entry| {
@@ -4113,7 +4114,6 @@ pub mod mod_vlsv_tracing {
 
             let num_files = files.len();
             let num_threads = rayon::current_num_threads();
-            println!("Loading {num_files} VLSV files using {num_threads} threads...");
 
             let pb = ProgressBar::new(num_files as u64);
             pb.set_style(
@@ -4126,22 +4126,33 @@ pub mod mod_vlsv_tracing {
 
             let mut timeline: Vec<(T, VlsvStaticField<T>)> = files
                 .par_iter()
-                .map(|filename| {
+                .filter_map(|filename| {
                     let f = VlsvFile::new(&filename).unwrap();
-                    let t: T = T::from(f.read_scalar_parameter("time").unwrap()).unwrap();
+                    let t_raw = f.read_scalar_parameter("time").unwrap();
+
+                    if t_raw < tmin || t_raw > tmax {
+                        pb.inc(1);
+                        return None;
+                    }
+
+                    let t: T = T::from(t_raw).unwrap();
                     let fields = VlsvStaticField::new(filename, periodic);
                     pb.inc(1);
-                    (t, fields)
+
+                    Some((t, fields))
                 })
                 .collect();
 
-            pb.finish_with_message("All files loaded.");
+            pb.finish_with_message("Files loaded within time range.");
+
             timeline.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
             let ds = if let Some(first) = timeline.first() {
                 first.1.ds()
             } else {
                 T::zero()
             };
+
             Self { timeline, ds }
         }
 
