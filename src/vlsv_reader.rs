@@ -57,6 +57,7 @@ pub mod mod_vlsv_reader {
     use num_traits::{Float, FromPrimitive, Num, NumCast, ToPrimitive, Zero};
     use once_cell::sync::OnceCell;
     use regex::Regex;
+    use rustc_hash::FxHashMap;
     use serde::Deserialize;
     use std::cell::RefCell;
     use std::sync::OnceLock;
@@ -357,7 +358,7 @@ pub mod mod_vlsv_reader {
         pub variables: OnceCell<HashMap<String, Variable>>,
         pub parameters: OnceCell<HashMap<String, Variable>>,
         memmap: OnceCell<Mmap>,
-        cidmap: OnceCell<std::collections::HashMap<usize, usize>>,
+        cidmap: OnceCell<FxHashMap<usize, usize>>,
         root: OnceCell<VlsvRoot>,
     }
 
@@ -473,19 +474,18 @@ pub mod mod_vlsv_reader {
         }
 
         #[inline]
-        fn cidmap(&self) -> &std::collections::HashMap<usize, usize> {
+        fn cidmap(&self) -> &FxHashMap<usize, usize> {
             self.cidmap.get_or_init(|| {
-                let cellid_ds = self
-                    .get_dataset("CellID")
-                    .expect("Failed to get CellID dataset");
+                let cellid_ds = self.get_dataset("CellID").expect("Dataset missing");
+                let mut map =
+                    FxHashMap::with_capacity_and_hasher(cellid_ds.arraysize, Default::default());
                 let mut cell_ids = Vec::<u64>::with_capacity(cellid_ds.arraysize);
                 unsafe { cell_ids.set_len(cellid_ds.arraysize) };
                 self.read_variable_into::<u64>(None, Some(cellid_ds), &mut cell_ids);
-                cell_ids
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, cid)| (cid as usize, index))
-                    .collect::<std::collections::HashMap<usize, usize>>()
+                for (index, &cid) in cell_ids.iter().enumerate() {
+                    map.insert(cid as usize, index);
+                }
+                map
             })
         }
 
@@ -2492,14 +2492,16 @@ pub mod mod_vlsv_reader {
                 );
             }
 
-            let cid_map = self.cidmap();
-            let mut indices = Vec::with_capacity(cid.len());
-            for &c in cid.iter() {
-                let idx = cid_map
-                    .get(&(c as usize))
-                    .copied()
-                    .unwrap_or_else(|| panic!("Failed to find cellid {c} in cidmap"));
+            let cellid_ds = self.get_dataset("CellID")?;
+            let cell_id_bytes = &self.memorymap()
+                [cellid_ds.offset..cellid_ds.offset + cellid_ds.datasize * cellid_ds.arraysize];
+            let cell_ids: &[u64] = bytemuck::try_cast_slice(cell_id_bytes)
+                .expect("CELLIDS misaligned or wrong length");
 
+            let mut indices = Vec::with_capacity(cid.len());
+            for (i, &c) in cid.iter().enumerate() {
+                let idx = find_near_with_hint(cell_ids, c as u64, hint[i])
+                    .unwrap_or_else(|| panic!("Failed to find cellid {c}"));
                 indices.push(idx);
             }
             hint.copy_from_slice(&indices);
