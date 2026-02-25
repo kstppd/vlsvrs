@@ -12,6 +12,5 @@ vdf_extract.py
 vg.npy
 fortran_bindings/*.mod
 fortran_bindings/*.o
-external/*
 
 
