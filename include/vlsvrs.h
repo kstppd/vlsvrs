@@ -50,6 +50,7 @@ typedef struct {
   double *data;
 } VLSVRS_Grid64;
 
+extern "C"{
 VLSVRS_GenericGrid read_var(const char *fname, const char *varname, int op);
 VLSVRS_Grid32 read_var_32(const char *fname, const char *varname, int op);
 VLSVRS_Grid64 read_var_64(const char *fname, const char *varname, int op);
@@ -62,7 +63,7 @@ void read_vdf_into_64(const char *fname, const char *pop, size_t cid,
                       VLSVRS_Grid64 *target);
 double read_scalar_parameter(const char *fname, const char *parameter);
 size_t get_wid(const char *fname, const char *pop);
-
+}
 #ifdef VLSVRS_STRIP_PREFIX
 #define VLSVRS_Grid32 Grid32
 #define VLSVRS_Grid64 Grid64
