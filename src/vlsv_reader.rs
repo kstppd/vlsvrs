@@ -2340,19 +2340,12 @@ pub mod mod_vlsv_reader {
             Some(vdf)
         }
 
-        pub fn read_sparsity<
-            T: Pod + Zero + Num + NumCast + std::iter::Sum + Default + TypeTag + std::cmp::PartialOrd,
-        >(
-            &self,
-            name: &str,
-            cid: usize,
-        ) -> Option<T> {
-            let v = self.read_vg_variable_at_as_ref_dyn::<T>(name, &[cid], &mut [0])?[0];
-            let mut k: f32 = f32::zero();
-            for chunk in v.chunks_exact(std::mem::size_of::<f32>()) {
-                k = pod_read_unaligned::<f32>(chunk);
-            }
-            T::from(k)
+        pub fn read_sparsity<T>(&self, name: &str, cid: usize) -> Option<T>
+        where
+            T: bytemuck::AnyBitPattern + Copy,
+        {
+            let results = self.read_vg_variable_at_as_ref_dyn::<T>(name, &[cid], &mut [0])?;
+            results.get(0).and_then(|slice| slice.get(0).copied())
         }
 
         pub fn read_variable<
@@ -2469,7 +2462,7 @@ pub mod mod_vlsv_reader {
             name: &str,
             cid: &[usize],
             hint: &mut [usize],
-        ) -> Option<Vec<&'a [u8]>>
+        ) -> Option<Vec<&'a [T]>>
         where
             T: bytemuck::AnyBitPattern,
         {
@@ -2484,31 +2477,38 @@ pub mod mod_vlsv_reader {
                 "CIDs and hint must have the same length."
             );
 
-            if info.datasize != core::mem::size_of::<T>() {
-                panic!(
-                    "Size mismatch: dataset has datasize {}, function expects {}",
-                    info.datasize,
-                    core::mem::size_of::<T>()
-                );
+            let cellid_ds = self
+                .get_dataset("CellID")
+                .expect("Failed to get CellID dataset");
+            let mut cell_ids = Vec::<u64>::with_capacity(cellid_ds.arraysize);
+            unsafe { cell_ids.set_len(cellid_ds.arraysize) };
+            self.read_variable_into::<u64>(None, Some(cellid_ds), &mut cell_ids);
+
+            for (i, &target_cid) in cid.iter().enumerate() {
+                let target_u64 = target_cid as u64;
+                let current_idx = hint[i];
+                if current_idx < cell_ids.len() && cell_ids[current_idx] == target_u64 {
+                    continue;
+                }
+
+                let found_idx = cell_ids
+                    .iter()
+                    .position(|&x| x == target_u64)
+                    .unwrap_or_else(|| panic!("CellID {target_cid} not found in dataset"));
+
+                hint[i] = found_idx;
             }
 
-            let cid_map = self.cidmap();
-            let mut indices = Vec::with_capacity(cid.len());
-            for &c in cid.iter() {
-                let idx = cid_map
-                    .get(&(c as usize))
-                    .copied()
-                    .unwrap_or_else(|| panic!("Failed to find cellid {c} in cidmap"));
-
-                indices.push(idx);
-            }
-            hint.copy_from_slice(&indices);
             let stride_bytes = info.datasize * info.vectorsize;
-            let mut retval = Vec::with_capacity(indices.len());
-            for idx in indices {
+            let mmap = self.memorymap();
+            let mut retval = Vec::with_capacity(hint.len());
+
+            for &idx in hint.iter() {
                 let off = info.offset + idx * stride_bytes;
-                retval.push(&self.memorymap()[off..off + stride_bytes]);
+                let raw_bytes = &mmap[off..off + stride_bytes];
+                retval.push(bytemuck::cast_slice::<u8, T>(raw_bytes));
             }
+
             Some(retval)
         }
 
@@ -5314,6 +5314,7 @@ pub mod mod_vlsv_py_exports {
     use bytemuck::pod_read_unaligned;
     use ndarray::Array2;
     use ndarray::Array4;
+    use numpy::PyReadwriteArray1;
     use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray4};
     use pyfunction;
     use pyo3::exceptions::{PyIOError, PyValueError};
@@ -5505,6 +5506,47 @@ pub mod mod_vlsv_py_exports {
                 _ => {
                     panic!("Type not recognized!")
                 }
+            }
+        }
+
+        fn read_vg_variable_at_with_hint<'py>(
+            &self,
+            py: Python<'py>,
+            variable: &str,
+            cid: Vec<usize>,
+            mut hint: PyReadwriteArray1<'_, usize>,
+        ) -> PyResult<PyObject> {
+            use pyo3::exceptions::PyTypeError;
+            let ds = self.inner.get_dataset(variable).ok_or_else(|| {
+                PyValueError::new_err(format!("Variable '{}' not found", variable))
+            })?;
+            let hint_slice = hint.as_slice_mut()?;
+            if cid.len() != hint_slice.len() {
+                return Err(PyValueError::new_err(
+                    "CID vector and Hint array must have the same length",
+                ));
+            }
+            match ds.datasize {
+                4 => {
+                    let refs = self
+                        .inner
+                        .read_vg_variable_at_as_ref_dyn::<f32>(variable, &cid, hint_slice)
+                        .ok_or_else(|| PyValueError::new_err("Failed to read f32 variable"))?;
+                    let vals: Vec<f32> = refs.into_iter().flatten().copied().collect();
+                    Ok(PyArray1::from_vec(py, vals).to_owned().into())
+                }
+                8 => {
+                    let refs = self
+                        .inner
+                        .read_vg_variable_at_as_ref_dyn::<f64>(variable, &cid, hint_slice)
+                        .ok_or_else(|| PyValueError::new_err("Failed to read f64 variable"))?;
+                    let vals: Vec<f64> = refs.into_iter().flatten().copied().collect();
+                    Ok(PyArray1::from_vec(py, vals).to_owned().into())
+                }
+                _ => Err(PyTypeError::new_err(format!(
+                    "Unsupported datasize {} for variable '{}'",
+                    ds.datasize, variable
+                ))),
             }
         }
 
@@ -5851,64 +5893,6 @@ pub mod mod_vlsv_py_exports {
         }
     }
 
-    #[pyfunction]
-    fn get_timeline_f32(
-        py: Python<'_>,
-        filenames: Vec<String>,
-        var: &str,
-        cids: Vec<usize>,
-    ) -> PyResult<Py<PyArray2<f32>>> {
-        let n_files = filenames.len();
-        let n_cids = cids.len();
-        let fptrs = py.allow_threads(|| open_vlsv_files_fast(filenames));
-        let mut hints = fptrs.first().unwrap().get_hints_for_cids(&cids);
-        let mut flat = vec![0f32; n_cids * n_files];
-        for (fi, f) in fptrs.iter().enumerate() {
-            let refs = f
-                .read_vg_variable_at_as_ref_dyn::<f32>(var, &cids, &mut hints)
-                .expect("PEBKAC");
-            assert_eq!(refs.len(), n_cids);
-
-            for (ci, bytes) in refs.iter().enumerate() {
-                let v = pod_read_unaligned::<f32>(bytes);
-                flat[ci * n_files + fi] = v;
-            }
-        }
-        let a = Array2::from_shape_vec((n_cids, n_files), flat).map_err(|_| {
-            PyValueError::new_err("I really do not know the conversion I copied from an example :)")
-        })?;
-        Ok(a.into_pyarray(py).to_owned().into())
-    }
-
-    #[pyfunction]
-    fn get_timeline_f64(
-        py: Python<'_>,
-        filenames: Vec<String>,
-        var: &str,
-        cids: Vec<usize>,
-    ) -> PyResult<Py<PyArray2<f64>>> {
-        let n_files = filenames.len();
-        let n_cids = cids.len();
-        let fptrs = py.allow_threads(|| open_vlsv_files_fast(filenames));
-        let mut hints = fptrs.first().unwrap().get_hints_for_cids(&cids);
-        let mut flat = vec![0f64; n_cids * n_files];
-        for (fi, f) in fptrs.iter().enumerate() {
-            let refs = f
-                .read_vg_variable_at_as_ref_dyn::<f64>(var, &cids, &mut hints)
-                .expect("PEBKAC");
-            assert_eq!(refs.len(), n_cids);
-
-            for (ci, bytes) in refs.iter().enumerate() {
-                let v = pod_read_unaligned::<f64>(bytes);
-                flat[ci * n_files + fi] = v;
-            }
-        }
-        let a = Array2::from_shape_vec((n_cids, n_files), flat).map_err(|_| {
-            PyValueError::new_err("I really do not know the conversion I copied from an example :)")
-        })?;
-        Ok(a.into_pyarray(py).to_owned().into())
-    }
-
     // -------------------- module --------------------
     #[pymodule(name = "vlsvrs")]
     fn vlsvrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -5917,8 +5901,6 @@ pub mod mod_vlsv_py_exports {
         m.add_function(wrap_pyfunction!(read_variable_f64, m)?)?;
         m.add_function(wrap_pyfunction!(read_vdf_f32, m)?)?;
         m.add_function(wrap_pyfunction!(read_vdf_f64, m)?)?;
-        m.add_function(wrap_pyfunction!(get_timeline_f32, m)?)?;
-        m.add_function(wrap_pyfunction!(get_timeline_f64, m)?)?;
         Ok(())
     }
 }
