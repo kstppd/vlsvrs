@@ -49,7 +49,7 @@ There are 3 main parts here:
 pub mod mod_vlsv_reader {
     pub const VLSV_FOOTER_LOC_START: usize = 8;
     pub const VLSV_FOOTER_LOC_END: usize = 16;
-    use bytemuck::{Pod, Zeroable, cast_slice, pod_read_unaligned};
+    use bytemuck::{Pod, Zeroable, cast_slice};
     use core::convert::TryInto;
     use memmap2::Mmap;
     use ndarray::{Array4, ArrayView1};
@@ -2342,10 +2342,10 @@ pub mod mod_vlsv_reader {
 
         pub fn read_sparsity<T>(&self, name: &str, cid: usize) -> Option<T>
         where
-            T: bytemuck::AnyBitPattern + Copy,
+            T: bytemuck::AnyBitPattern + Copy + Default,
         {
-            let results = self.read_vg_variable_at_as_ref_dyn::<T>(name, &[cid], &mut [0])?;
-            results.get(0).and_then(|slice| slice.get(0).copied())
+            let ret = self.read_vg_variable_at_hinted::<T>(name, &[cid], &mut [0])?;
+            ret.get(0).and_then(|v| v.get(0).copied())
         }
 
         pub fn read_variable<
@@ -2457,14 +2457,14 @@ pub mod mod_vlsv_reader {
                 .collect::<Vec<usize>>()
         }
 
-        pub fn read_vg_variable_at_as_ref_dyn<'a, T>(
-            &'a self,
+        pub fn read_vg_variable_at_hinted<T>(
+            &self,
             name: &str,
             cid: &[usize],
             hint: &mut [usize],
-        ) -> Option<Vec<&'a [T]>>
+        ) -> Option<Vec<Vec<T>>>
         where
-            T: bytemuck::AnyBitPattern,
+            T: bytemuck::AnyBitPattern + Copy + Default,
         {
             let info = self.get_dataset(name)?;
             if info.grid.clone()? != VlasiatorGrid::SPATIALGRID {
@@ -2483,75 +2483,33 @@ pub mod mod_vlsv_reader {
             let mut cell_ids = Vec::<u64>::with_capacity(cellid_ds.arraysize);
             unsafe { cell_ids.set_len(cellid_ds.arraysize) };
             self.read_variable_into::<u64>(None, Some(cellid_ds), &mut cell_ids);
-
-            for (i, &target_cid) in cid.iter().enumerate() {
-                let target_u64 = target_cid as u64;
-                let current_idx = hint[i];
-                if current_idx < cell_ids.len() && cell_ids[current_idx] == target_u64 {
-                    continue;
-                }
-
-                let found_idx = cell_ids
-                    .iter()
-                    .position(|&x| x == target_u64)
-                    .unwrap_or_else(|| panic!("CellID {target_cid} not found in dataset"));
-
-                hint[i] = found_idx;
-            }
-
             let stride_bytes = info.datasize * info.vectorsize;
             let mmap = self.memorymap();
-            let mut retval = Vec::with_capacity(hint.len());
+            let mut retval = Vec::with_capacity(cid.len());
+            for (i, &target_cid) in cid.iter().enumerate() {
+                let target_u64 = target_cid as u64;
+                let mut idx = hint[i];
+                if idx >= cell_ids.len() || cell_ids[idx] != target_u64 {
+                    idx = cell_ids
+                        .iter()
+                        .position(|&x| x == target_u64)
+                        .unwrap_or_else(|| panic!("CellID {target_cid} not found"));
+                    hint[i] = idx;
+                }
 
-            for &idx in hint.iter() {
                 let off = info.offset + idx * stride_bytes;
                 let raw_bytes = &mmap[off..off + stride_bytes];
-                retval.push(bytemuck::cast_slice::<u8, T>(raw_bytes));
+                let mut typed_data = vec![T::default(); info.vectorsize];
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        raw_bytes.as_ptr(),
+                        typed_data.as_mut_ptr() as *mut u8,
+                        stride_bytes,
+                    );
+                }
+                retval.push(typed_data);
             }
-
             Some(retval)
-        }
-
-        pub fn read_vg_variable_at_as_ref_const<'a, T, const N: usize>(
-            &'a self,
-            name: &str,
-            cid: &[usize; N],
-            hint: &mut [usize; N],
-        ) -> Option<[&'a [u8]; N]>
-        where
-            T: bytemuck::AnyBitPattern,
-        {
-            let info = self.get_dataset(name)?;
-            if info.grid.clone()? != VlasiatorGrid::SPATIALGRID {
-                panic!("This method only supports reading in VG variables");
-            }
-
-            if info.datasize != core::mem::size_of::<T>() {
-                panic!(
-                    "Size mismatch: dataset has datasize {}, function expects {}",
-                    info.datasize,
-                    core::mem::size_of::<T>()
-                );
-            }
-
-            let cid_map = self.cidmap();
-            let mut indices = Vec::with_capacity(cid.len());
-            for &c in cid.iter() {
-                let idx = cid_map
-                    .get(&(c as usize))
-                    .copied()
-                    .unwrap_or_else(|| panic!("Failed to find cellid {c} in cidmap"));
-
-                indices.push(idx);
-            }
-            hint.copy_from_slice(&indices);
-            let stride_bytes = info.datasize * info.vectorsize;
-            let out: [&'a [u8]; N] = core::array::from_fn(|i| {
-                let idx = indices[i];
-                let off = info.offset + idx * stride_bytes;
-                &self.memorymap()[off..off + stride_bytes]
-            });
-            Some(out)
         }
     }
 
@@ -5311,11 +5269,9 @@ pub mod mod_vlsv_c_exports {
 pub mod mod_vlsv_py_exports {
 
     use super::mod_vlsv_reader::*;
-    use bytemuck::pod_read_unaligned;
-    use ndarray::Array2;
     use ndarray::Array4;
     use numpy::PyReadwriteArray1;
-    use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray4};
+    use numpy::{IntoPyArray, PyArray1, PyArray4};
     use pyfunction;
     use pyo3::exceptions::{PyIOError, PyValueError};
     use pyo3::prelude::*;
@@ -5333,7 +5289,6 @@ pub mod mod_vlsv_py_exports {
     pub struct PyVlsvFile {
         inner: VlsvFile,
     }
-    use pyo3::prelude::*;
 
     #[pyclass]
     #[derive(Debug, Clone)]
@@ -5516,7 +5471,6 @@ pub mod mod_vlsv_py_exports {
             cid: Vec<usize>,
             mut hint: PyReadwriteArray1<'_, usize>,
         ) -> PyResult<PyObject> {
-            use pyo3::exceptions::PyTypeError;
             let ds = self.inner.get_dataset(variable).ok_or_else(|| {
                 PyValueError::new_err(format!("Variable '{}' not found", variable))
             })?;
@@ -5528,25 +5482,26 @@ pub mod mod_vlsv_py_exports {
             }
             match ds.datasize {
                 4 => {
-                    let refs = self
+                    let vals: Vec<Vec<f32>> = self
                         .inner
-                        .read_vg_variable_at_as_ref_dyn::<f32>(variable, &cid, hint_slice)
+                        .read_vg_variable_at_hinted::<f32>(variable, &cid, hint_slice)
                         .ok_or_else(|| PyValueError::new_err("Failed to read f32 variable"))?;
-                    let vals: Vec<f32> = refs.into_iter().flatten().copied().collect();
-                    Ok(PyArray1::from_vec(py, vals).to_owned().into())
+
+                    let flattened: Vec<f32> = vals.into_iter().flatten().collect();
+                    Ok(PyArray1::from_vec(py, flattened).to_owned().into())
                 }
                 8 => {
-                    let refs = self
+                    let vals: Vec<Vec<f64>> = self
                         .inner
-                        .read_vg_variable_at_as_ref_dyn::<f64>(variable, &cid, hint_slice)
+                        .read_vg_variable_at_hinted::<f64>(variable, &cid, hint_slice)
                         .ok_or_else(|| PyValueError::new_err("Failed to read f64 variable"))?;
-                    let vals: Vec<f64> = refs.into_iter().flatten().copied().collect();
-                    Ok(PyArray1::from_vec(py, vals).to_owned().into())
+
+                    let flattened: Vec<f64> = vals.into_iter().flatten().collect();
+                    Ok(PyArray1::from_vec(py, flattened).to_owned().into())
                 }
-                _ => Err(PyTypeError::new_err(format!(
-                    "Unsupported datasize {} for variable '{}'",
-                    ds.datasize, variable
-                ))),
+                _ => {
+                    panic!("Type not recognized!")
+                }
             }
         }
 
