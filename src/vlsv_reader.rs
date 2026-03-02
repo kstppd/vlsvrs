@@ -2488,14 +2488,9 @@ pub mod mod_vlsv_reader {
             let mut retval = Vec::with_capacity(cid.len());
             for (i, &target_cid) in cid.iter().enumerate() {
                 let target_u64 = target_cid as u64;
-                let mut idx = hint[i];
-                if idx >= cell_ids.len() || cell_ids[idx] != target_u64 {
-                    idx = cell_ids
-                        .iter()
-                        .position(|&x| x == target_u64)
-                        .unwrap_or_else(|| panic!("CellID {target_cid} not found"));
-                    hint[i] = idx;
-                }
+                let idx = find_near_with_hint(&cell_ids, target_u64, hint[i])
+                    .unwrap_or_else(|| panic!("CellID {target_cid} not found"));
+                hint[i] = idx;
 
                 let off = info.offset + idx * stride_bytes;
                 let raw_bytes = &mmap[off..off + stride_bytes];
