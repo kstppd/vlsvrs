@@ -50,6 +50,11 @@ path="src/vlsv_ptr.rs"
 required-features = ["vlsv_ptr"]
 
 [[bin]]
+name="vlsv_back_ptr"
+path="src/vlsv_back_ptr.rs"
+required-features = ["vlsv_ptr"]
+
+[[bin]]
 name="vlsv_particle_sampler"
 path="src/restart_particle_sampler.rs"
 required-features = ["vlsv_ptr"]
