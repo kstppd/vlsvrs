@@ -5407,7 +5407,6 @@ pub mod mod_vlsv_c_exports {
 #[cfg(feature = "with_bindings")]
 pub mod mod_vlsv_py_exports {
     use super::mod_vlsv_reader::*;
-    use crate::mod_vlsv_reader::DataType;
     use ndarray::Array4;
     use numpy::PyReadwriteArray1;
     use numpy::{IntoPyArray, PyArray1, PyArray4};

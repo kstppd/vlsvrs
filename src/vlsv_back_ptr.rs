@@ -52,7 +52,12 @@ pub fn backtrace_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let args: Vec<String> = env::args().collect();
-    let fields = VlsvDynamicField::<f64>::new(&String::from(DEFAULT_VLSV), [false, false, false],TMIN,TMAX);
+    let fields = VlsvDynamicField::<f64>::new_partial(
+        &String::from(DEFAULT_VLSV),
+        [false, false, false],
+        TMIN,
+        TMAX,
+    );
     let mass = physical_constants::f64::PROTON_MASS;
     let charge = physical_constants::f64::PROTON_CHARGE;
     let mut actual_time: f64 = 0.0;
@@ -92,7 +97,8 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let mut pop_arc = Arc::new(Mutex::new(pop));
     let mut out_count = 0;
 
-    while actual_time > TMIN + 1.0 { // One second of buffer 
+    while actual_time > TMIN + 1.0 {
+        // One second of buffer
         let n_alive = pop_arc.lock().unwrap().count_alive();
         println!(
             "Tracing {} particles [{} alive] at t= {:.3} s",
