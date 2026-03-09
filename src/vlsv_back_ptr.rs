@@ -164,7 +164,7 @@ mod tests {
             let dt_sub = t_gyro / (num_steps as f64);
 
             for _ in 0..num_steps {
-                push_population_cpu_adpt(&mut pop_arc, &field, dt_sub, &mut actual_time);
+                backtrace_population_cpu_adpt(&mut pop_arc, &field, dt_sub, &mut actual_time);
             }
 
             let locked = pop_arc.lock().unwrap();
