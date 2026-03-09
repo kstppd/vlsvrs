@@ -4671,6 +4671,104 @@ pub mod mod_vlsv_tracing {
         }
     }
 
+    pub fn boris_backtracing_adaptive<T: PtrTrait, F: Field<T> + std::marker::Sync>(
+        p: &mut Particle<T>,
+        f: &F,
+        dt: &mut T,
+        t0: T,
+        t1: T,
+        mass: T,
+        charge: T,
+    ) {
+        let mut t = t0;
+        while t > t1 {
+            if t + *dt < t1 {
+                *dt = t1 - t;
+            }
+
+            let fields_at_p = match f.get_fields_at(t, p.x, p.y, p.z) {
+                Some(fields) => fields,
+                None => {
+                    p.alive = false;
+                    return;
+                }
+            };
+
+            let mut p1 = p.clone();
+            boris(
+                &mut p1,
+                &fields_at_p[3..6],
+                &fields_at_p[0..3],
+                *dt,
+                mass,
+                charge,
+            );
+
+            let mut p2 = p.clone();
+            boris(
+                &mut p2,
+                &fields_at_p[3..6],
+                &fields_at_p[0..3],
+                *dt / T::from(2.0).unwrap(),
+                mass,
+                charge,
+            );
+
+            let fields_at_p2 =
+                match f.get_fields_at(t + *dt / T::from(2.0).unwrap(), p2.x, p2.y, p2.z) {
+                    Some(fields) => fields,
+                    None => {
+                        p.alive = false;
+                        return;
+                    }
+                };
+
+            boris(
+                &mut p2,
+                &fields_at_p2[3..6],
+                &fields_at_p2[0..3],
+                *dt / T::from(2.0).unwrap(),
+                mass,
+                charge,
+            );
+
+            let error = [
+                T::from(100.0).unwrap() * (p2.x - p1.x).abs(),
+                T::from(100.0).unwrap() * (p2.y - p1.y).abs(),
+                T::from(100.0).unwrap() * (p2.z - p1.z).abs(),
+            ]
+            .iter()
+            .copied()
+            .fold(T::neg_infinity(), T::max);
+
+            let b = [fields_at_p[0], fields_at_p[1], fields_at_p[2]];
+            let larmor = larmor_radius(p, &b, mass, charge);
+            let tol = T::from(larmor / T::from(360.0).unwrap()).unwrap();
+
+            let new_dt = T::from(0.9).unwrap()
+                * *dt
+                * T::min(
+                    T::max(
+                        (tol / (T::from(2.0).unwrap() * error + T::epsilon())).sqrt(),
+                        T::from(0.3).unwrap(),
+                    ),
+                    T::from(2.0).unwrap(),
+                );
+
+            if error < tol {
+                *p = p2;
+                t = t + *dt;
+                *dt = new_dt;
+            } else {
+                *dt = new_dt;
+            }
+
+            if !p.alive {
+                break;
+            }
+        }
+    }
+
     #[derive(Debug, Clone)]
     pub struct GuidingCenter2D<T: PtrTrait> {
         pub x: T,
