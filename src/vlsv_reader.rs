@@ -5231,12 +5231,19 @@ pub mod mod_vlsv_c_exports {
     ) -> Grid<f32> {
         let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
         let var = unsafe { CStr::from_ptr(varname).to_str().unwrap() };
+        let comp = op as usize;
         let f = VlsvFile::new(name).unwrap();
-        let var: Array4<f32> = f
-            .read_variable_zoom::<f32>(var, Some(op), scale_factor)
+        let arr: Array4<f32> = f
+            .read_variable_zoom::<f32>(var, None, scale_factor)
             .unwrap();
-        let dims = var.dim();
-        let mut vec = var.into_raw_vec_and_offset().0;
+        let (nx, ny, nz, ncomp) = arr.dim();
+        assert!(comp < ncomp, "component {} out of bounds {}", comp, ncomp);
+        let view = arr
+            .index_axis(ndarray::Axis(3), comp)
+            .insert_axis(ndarray::Axis(3))
+            .to_owned();
+        let dims = view.dim();
+        let mut vec = view.into_raw_vec();
         let ptr = vec.as_mut_ptr();
         std::mem::forget(vec);
         Grid::<f32>::new(dims, f.get_spatial_mesh_extents().unwrap(), ptr)
@@ -5251,14 +5258,24 @@ pub mod mod_vlsv_c_exports {
     ) -> Grid<f64> {
         let name = unsafe { CStr::from_ptr(filename).to_str().unwrap() };
         let var = unsafe { CStr::from_ptr(varname).to_str().unwrap() };
+        let comp = op as usize;
+
         let f = VlsvFile::new(name).unwrap();
-        let var: Array4<f64> = f
-            .read_variable_zoom::<f64>(var, Some(op), scale_factor)
+        let arr: Array4<f64> = f
+            .read_variable_zoom::<f64>(var, None, scale_factor)
             .unwrap();
-        let dims = var.dim();
-        let mut vec = var.into_raw_vec_and_offset().0;
+        let (nx, ny, nz, ncomp) = arr.dim();
+        assert!(comp < ncomp, "component {} out of bounds {}", comp, ncomp);
+        let view = arr
+            .index_axis(ndarray::Axis(3), comp)
+            .insert_axis(ndarray::Axis(3))
+            .to_owned();
+
+        let dims = view.dim();
+        let mut vec = view.into_raw_vec();
         let ptr = vec.as_mut_ptr();
         std::mem::forget(vec);
+
         Grid::<f64>::new(dims, f.get_spatial_mesh_extents().unwrap(), ptr)
     }
 
