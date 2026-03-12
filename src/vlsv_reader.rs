@@ -5236,14 +5236,14 @@ pub mod mod_vlsv_c_exports {
         let arr: Array4<f32> = f
             .read_variable_zoom::<f32>(var, None, scale_factor)
             .unwrap();
-        let (nx, ny, nz, ncomp) = arr.dim();
+        let (_nx, _ny, _nz, ncomp) = arr.dim();
         assert!(comp < ncomp, "component {} out of bounds {}", comp, ncomp);
         let view = arr
             .index_axis(ndarray::Axis(3), comp)
             .insert_axis(ndarray::Axis(3))
             .to_owned();
         let dims = view.dim();
-        let mut vec = view.into_raw_vec();
+        let mut vec = view.into_raw_vec_and_offset().0;
         let ptr = vec.as_mut_ptr();
         std::mem::forget(vec);
         Grid::<f32>::new(dims, f.get_spatial_mesh_extents().unwrap(), ptr)
@@ -5264,7 +5264,7 @@ pub mod mod_vlsv_c_exports {
         let arr: Array4<f64> = f
             .read_variable_zoom::<f64>(var, None, scale_factor)
             .unwrap();
-        let (nx, ny, nz, ncomp) = arr.dim();
+        let (_nx, _ny, _nz, ncomp) = arr.dim();
         assert!(comp < ncomp, "component {} out of bounds {}", comp, ncomp);
         let view = arr
             .index_axis(ndarray::Axis(3), comp)
@@ -5272,10 +5272,9 @@ pub mod mod_vlsv_c_exports {
             .to_owned();
 
         let dims = view.dim();
-        let mut vec = view.into_raw_vec();
+        let mut vec = view.into_raw_vec_and_offset().0;
         let ptr = vec.as_mut_ptr();
         std::mem::forget(vec);
-
         Grid::<f64>::new(dims, f.get_spatial_mesh_extents().unwrap(), ptr)
     }
 
