@@ -49,6 +49,7 @@ There are 3 main parts here:
 pub mod mod_vlsv_reader {
     pub const VLSV_FOOTER_LOC_START: usize = 8;
     pub const VLSV_FOOTER_LOC_END: usize = 16;
+    pub const VLSV_SIG: &str = "</VLSV>";
     use bytemuck::{Pod, Zeroable, cast_slice};
     use core::convert::TryInto;
     use memmap2::Mmap;
@@ -465,9 +466,17 @@ pub mod mod_vlsv_reader {
                 let file = std::fs::File::open(&self.filename)
                     .unwrap_or_else(|e| panic!("ERROR:mmap open('{}') failed: {e}", self.filename));
                 unsafe {
-                    memmap2::MmapOptions::new().map(&file).unwrap_or_else(|e| {
+                    let retval = memmap2::MmapOptions::new().map(&file).unwrap_or_else(|e| {
                         panic!("ERROR:mmap map('{}') failed: {e}", self.filename)
-                    })
+                    });
+                    let len = retval.len();
+                    let sig = &retval[len - VLSV_SIG.len() - 1..len - 1];
+                    let str_sig = str::from_utf8(sig)
+                        .expect("COULD NOT READ VLSV SIGNATURE. THIS IS PROBABLY NOT A VLSV FILE");
+                    if str_sig != VLSV_SIG {
+                        panic!("ERROR: {} is not a VLSV file", self.filename);
+                    }
+                    return retval;
                 }
             })
         }
