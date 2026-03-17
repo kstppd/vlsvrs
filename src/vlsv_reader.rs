@@ -2617,10 +2617,6 @@ pub mod mod_vlsv_reader {
         }
     }
 
-    fn factorial_f64(n: usize) -> f64 {
-        (1..=n).fold(1.0f64, |acc, k| acc * (k as f64))
-    }
-
     fn linspace_inclusive(a: f64, b: f64, n: usize) -> Vec<f64> {
         if n == 0 {
             return vec![];
@@ -2632,6 +2628,34 @@ pub mod mod_vlsv_reader {
         (0..n).map(|i| a + step * (i as f64)).collect()
     }
 
+    fn factorial_f64(n: usize) -> f64 {
+        (1..=n).fold(1.0f64, |acc, k| acc * (k as f64))
+    }
+
+    fn hermite_polynomial_values(n: usize, x: &[f64]) -> Vec<f64> {
+        if n == 0 {
+            return vec![1.0; x.len()];
+        }
+        if n == 1 {
+            return x.iter().map(|&xi| 2.0 * xi).collect();
+        }
+
+        let mut h_nm2 = vec![1.0f64; x.len()];
+        let mut h_nm1: Vec<f64> = x.iter().map(|&xi| 2.0 * xi).collect();
+        let mut h_n = vec![0.0f64; x.len()];
+
+        for i in 2..=n {
+            let coeff = 2.0 * ((i - 1) as f64);
+            for j in 0..x.len() {
+                h_n[j] = 2.0 * x[j] * h_nm1[j] - coeff * h_nm2[j];
+            }
+            std::mem::swap(&mut h_nm2, &mut h_nm1);
+            std::mem::swap(&mut h_nm1, &mut h_n);
+        }
+
+        h_nm1
+    }
+
     fn get_hermite_axis(
         shape: [usize; 3],
         v_limits: [f64; 6],
@@ -2641,37 +2665,33 @@ pub mod mod_vlsv_reader {
         axis: usize,
     ) -> Vec<f32> {
         let npts = shape[axis];
-        let vmin = v_limits[axis] as f32;
-        let vmax = v_limits[axis + 3] as f32;
-        let u_ax = u[axis];
+        let vmin = v_limits[axis];
+        let vmax = v_limits[axis + 3];
+        let u_ax = u[axis] as f64;
+        let vth_f64 = vth as f64;
 
-        let mut herm = vec![0f32; order * npts];
+        let mut herm = vec![0.0f32; order * npts];
         if order == 0 || npts == 0 {
             return herm;
         }
 
-        let inv_sqrt_vth_sqrt_pi = (vth * std::f32::consts::PI.sqrt()).sqrt().recip();
+        let v = linspace_inclusive(vmin, vmax, npts);
+        let z: Vec<f64> = v.iter().map(|&vi| (vi - u_ax) / vth_f64).collect();
 
-        for i in 0..npts {
-            let v = if npts > 1 {
-                vmin + (vmax - vmin) * (i as f32 / (npts - 1) as f32)
-            } else {
-                vmin
-            };
-            let x = (v - u_ax) / vth;
-            let mut h_prev = 0.0f32;
-            let mut h_curr = inv_sqrt_vth_sqrt_pi;
-            herm[0 * npts + i] = h_curr;
+        let sqrt_pi = std::f64::consts::PI.sqrt();
+        let sqrt_vth = vth_f64.sqrt();
 
-            for n in 1..order {
-                let n_f = n as f32;
-                let h_next =
-                    (x * 2.0f32.sqrt() * h_curr - (n_f - 1.0).sqrt() * h_prev) / n_f.sqrt();
-                h_prev = h_curr;
-                h_curr = h_next;
-                herm[n * npts + i] = h_curr;
+        for n in 0..order {
+            let f_n = factorial_f64(n);
+            let norm_const = ((2.0f64).powi(n as i32) * f_n * sqrt_pi).sqrt();
+            let hn = hermite_polynomial_values(n, &z);
+
+            for i in 0..npts {
+                let basis = (hn[i] * (-(z[i] * z[i])).exp()) / (norm_const * sqrt_vth);
+                herm[n * npts + i] = basis as f32;
             }
         }
+
         herm
     }
 
