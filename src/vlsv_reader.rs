@@ -3899,8 +3899,9 @@ pub mod mod_vlsv_tracing {
     }
 
     pub struct VlsvDynamicField<T: PtrTrait> {
-        //time,field
-        timeline: Vec<(T, VlsvStaticField<T>)>,
+        timeline: Vec<(T, String)>,
+        cache: std::sync::Mutex<std::collections::HashMap<usize, VlsvStaticField<T>>>,
+        periodic: [bool; 3],
         ds: T,
     }
 
@@ -4039,9 +4040,7 @@ pub mod mod_vlsv_tracing {
     }
 
     impl<T: PtrTrait> VlsvDynamicField<T> {
-        pub fn new(dir: &str, periodic: [bool; 3]) -> Self {
-            use indicatif::{ProgressBar, ProgressStyle};
-            use rayon::prelude::*;
+        fn collect_vlsv_files(dir: &str) -> Vec<String> {
             use std::fs;
             let mut files: Vec<String> = fs::read_dir(dir)
                 .unwrap()
@@ -4055,11 +4054,16 @@ pub mod mod_vlsv_tracing {
                 })
                 .collect();
             files.sort();
+            files
+        }
 
+        pub fn new(dir: &str, periodic: [bool; 3]) -> Self {
+            use indicatif::{ProgressBar, ProgressStyle};
+            use rayon::prelude::*;
+            let files = Self::collect_vlsv_files(dir);
             let num_files = files.len();
             let num_threads = rayon::current_num_threads();
-            println!("Loading {num_files} VLSV files using {num_threads} threads...");
-
+            println!("Scanning {num_files} VLSV files using {num_threads} threads...");
             let pb = ProgressBar::new(num_files as u64);
             pb.set_style(
                 ProgressStyle::with_template(
@@ -4069,48 +4073,42 @@ pub mod mod_vlsv_tracing {
                 .progress_chars("##-"),
             );
 
-            let mut timeline: Vec<(T, VlsvStaticField<T>)> = files
+            let mut timeline: Vec<(T, String)> = files
                 .par_iter()
                 .map(|filename| {
-                    let f = VlsvFile::new(&filename).unwrap();
+                    let f = VlsvFile::new(filename).unwrap();
                     let t: T = T::from(f.read_scalar_parameter("time").unwrap()).unwrap();
-                    let fields = VlsvStaticField::new(filename, periodic);
                     pb.inc(1);
-                    (t, fields)
+                    (t, filename.clone())
                 })
                 .collect();
 
-            pb.finish_with_message("All files loaded.");
+            pb.finish_with_message("Done!");
             timeline.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-            let ds = if let Some(first) = timeline.first() {
-                first.1.ds()
+            let mut cache = std::collections::HashMap::new();
+            let ds = if let Some((_, first_file)) = timeline.first() {
+                let first = VlsvStaticField::new(first_file, periodic);
+                let d = first.ds();
+                cache.insert(0usize, first);
+                d
             } else {
                 T::zero()
             };
-            Self { timeline, ds }
+            Self {
+                timeline,
+                cache: std::sync::Mutex::new(cache),
+                periodic,
+                ds,
+            }
         }
 
         pub fn new_partial(dir: &str, periodic: [bool; 3], tmin: T, tmax: T) -> Self {
             use indicatif::{ProgressBar, ProgressStyle};
             use rayon::prelude::*;
-            use std::fs;
-            let mut files: Vec<String> = fs::read_dir(dir)
-                .unwrap()
-                .filter_map(|entry| {
-                    let path = entry.unwrap().path();
-                    if path.extension().map(|e| e == "vlsv").unwrap_or(false) {
-                        Some(path.to_string_lossy().to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            files.sort();
-
+            let files = Self::collect_vlsv_files(dir);
             let num_files = files.len();
             let num_threads = rayon::current_num_threads();
-            println!("Loading {num_files} VLSV files using {num_threads} threads...");
-
+            println!("Scanning {num_files} VLSV files using {num_threads} threads...");
             let pb = ProgressBar::new(num_files as u64);
             pb.set_style(
                 ProgressStyle::with_template(
@@ -4120,30 +4118,37 @@ pub mod mod_vlsv_tracing {
                 .progress_chars("##-"),
             );
 
-            let mut timeline: Vec<(T, VlsvStaticField<T>)> = files
+            let mut timeline: Vec<(T, String)> = files
                 .par_iter()
                 .filter_map(|filename| {
-                    let f = VlsvFile::new(&filename).unwrap();
+                    let f = VlsvFile::new(filename).unwrap();
                     let time = T::from(f.read_scalar_parameter("time").unwrap()).unwrap();
+                    pb.inc(1);
                     if time < tmin || time > tmax {
-                        pb.inc(1);
                         return None;
                     }
-                    let fields = VlsvStaticField::new(filename, periodic);
-                    pb.inc(1);
-
-                    Some((time, fields))
+                    Some((time, filename.clone()))
                 })
                 .collect();
 
-            pb.finish_with_message("All files loaded.");
+            pb.finish_with_message("Done.");
             timeline.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-            let ds = if let Some(first) = timeline.first() {
-                first.1.ds()
+            let mut cache = std::collections::HashMap::new();
+            let ds = if let Some((_, first_file)) = timeline.first() {
+                let first = VlsvStaticField::new(first_file, periodic);
+                let d = first.ds();
+                cache.insert(0usize, first);
+                d
             } else {
                 T::zero()
             };
-            Self { timeline, ds }
+
+            Self {
+                timeline,
+                cache: std::sync::Mutex::new(cache),
+                periodic,
+                ds,
+            }
         }
 
         pub fn temporal_range(&self) -> (T, T) {
@@ -4159,27 +4164,41 @@ pub mod mod_vlsv_tracing {
             if self.timeline.is_empty() {
                 return None;
             }
-            if self.timeline.len() == 1 {
-                return self.timeline[0].1.get_fields_at(time, x, y, z);
-            }
             let mut i = 0;
             while i + 1 < self.timeline.len() && self.timeline[i + 1].0 <= time {
                 i += 1;
             }
-            if i + 1 == self.timeline.len() {
-                return self.timeline[i].1.get_fields_at(time, x, y, z);
+            let single = self.timeline.len() == 1 || i + 1 == self.timeline.len();
+            let i1 = if single { i } else { i + 1 };
+
+            if !single {
+                let (tmin, tmax) = self.temporal_range();
+                if time < tmin || time > tmax {
+                    panic!("Time {time} is outside of directory temporal range {tmin} - {tmax}!");
+                }
             }
-            let (tmin, tmax) = self.temporal_range();
-            if time < tmin || time > tmax {
-                panic!("Time {time} is outside of directory temporal range {tmin} - {tmax}!");
+            let mut cache = self.cache.lock().unwrap();
+            cache.retain(|k, _| *k == i || *k == i1);
+            if !cache.contains_key(&i) {
+                cache.insert(i, VlsvStaticField::new(&self.timeline[i].1, self.periodic));
+            }
+            if !single && !cache.contains_key(&i1) {
+                cache.insert(
+                    i1,
+                    VlsvStaticField::new(&self.timeline[i1].1, self.periodic),
+                );
             }
 
-            let (t0, ref f0) = self.timeline[i];
-            let (t1, ref f1) = self.timeline[i + 1];
+            if single {
+                return cache[&i].get_fields_at(time, x, y, z);
+            }
+
+            let t0 = self.timeline[i].0;
+            let t1 = self.timeline[i1].0;
             let frac = (time - t0) / (t1 - t0);
-            let fields0 = f0.get_fields_at(time, x, y, z)?;
-            let fields1 = f1.get_fields_at(time, x, y, z)?;
-            //Temporal lerp
+            let fields0 = cache[&i].get_fields_at(time, x, y, z)?;
+            let fields1 = cache[&i1].get_fields_at(time, x, y, z)?;
+            // Temporal lerp
             Some([
                 fields0[0] * (T::one() - frac) + fields1[0] * frac,
                 fields0[1] * (T::one() - frac) + fields1[1] * frac,
