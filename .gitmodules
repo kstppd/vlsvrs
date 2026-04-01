@@ -6,7 +6,7 @@
 	url = https://github.com/LLNL/zfp.git
 [submodule "external/eigen"]
 	path = external/eigen
-	url = https://github.com/libigl/eigen.git
+	url = "https://gitlab.com/libeigen/eigen.git"
 [submodule "external/asterix"]
 	path = external/asterix
 	url = https://github.com/fmihpc/asterix.git
