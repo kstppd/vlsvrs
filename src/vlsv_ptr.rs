@@ -11,8 +11,10 @@ use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
 
 const TOUT: f64 = 5.0;
+const TMIN: f64 = 300.0;
 const TMAX: f64 = 500.0;
 const DEFAULT_VLSV: &str = "/home/kstppd/Desktop/bulk.0000601.vlsv";
+const PERIODIC: [bool; 3] = [false, false, false];
 
 pub fn push_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
     pop: &mut Arc<Mutex<ParticlePopulation<T>>>,
@@ -51,7 +53,23 @@ pub fn push_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let args: Vec<String> = env::args().collect();
-    let fields = VlsvStaticField::<f64>::new(&String::from(DEFAULT_VLSV), [false, false, false]);
+    let is_file = std::fs::metadata(DEFAULT_VLSV)
+        .unwrap()
+        .file_type()
+        .is_file();
+    let fields: Box<dyn Field<f64> + Sync + Send> = if is_file {
+        Box::new(VlsvStaticField::<f64>::new(
+            &String::from(DEFAULT_VLSV),
+            PERIODIC,
+        ))
+    } else {
+        Box::new(VlsvDynamicField::<f64>::new_partial(
+            &String::from(DEFAULT_VLSV),
+            PERIODIC,
+            TMIN,
+            TMAX,
+        ))
+    };
     let mass = physical_constants::f64::PROTON_MASS;
     let charge = physical_constants::f64::PROTON_CHARGE;
     let mut actual_time: f64 = 0.0;

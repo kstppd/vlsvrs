@@ -11,9 +11,11 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
 //Configure these
+const TMIN: f64 = 300.0;
 const TOUT: f64 = 5.0; //output file cadence in seconds
 const TMAX: f64 = 700.0; // run until we hit this
-const VLSV_DIR: &str = "/wrk-vakka/group/spacephysics/vlasiator/2D/AID/bulk/";
+const DEFAULT_VLSV: &str = "/wrk-vakka/group/spacephysics/vlasiator/2D/AID/bulk/";
+const PERIODIC: [bool; 3] = [false, false, false];
 
 pub fn push_gc_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
     pop: &mut Arc<Mutex<GCPopulation<T>>>,
@@ -51,7 +53,23 @@ pub fn push_gc_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let args: Vec<String> = env::args().collect();
-    let fields = VlsvDynamicField::<f64>::new(VLSV_DIR, [false, false, false]);
+    let is_file = std::fs::metadata(DEFAULT_VLSV)
+        .unwrap()
+        .file_type()
+        .is_file();
+    let fields: Box<dyn Field<f64> + Sync + Send> = if is_file {
+        Box::new(VlsvStaticField::<f64>::new(
+            &String::from(DEFAULT_VLSV),
+            PERIODIC,
+        ))
+    } else {
+        Box::new(VlsvDynamicField::<f64>::new_partial(
+            &String::from(DEFAULT_VLSV),
+            PERIODIC,
+            TMIN,
+            TMAX,
+        ))
+    };
     let mass = physical_constants::f64::PROTON_MASS;
     let charge = physical_constants::f64::PROTON_CHARGE;
     let mut actual_time: f64 = 0.0;

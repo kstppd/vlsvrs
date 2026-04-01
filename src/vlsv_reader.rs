@@ -4205,6 +4205,15 @@ pub mod mod_vlsv_tracing {
         [b[0], b[1], b[2], T::zero(), T::zero(), T::zero()]
     }
 
+    impl<T: PtrTrait, F: Field<T> + ?Sized> Field<T> for Box<F> {
+        fn get_fields_at(&self, time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
+            (**self).get_fields_at(time, x, y, z)
+        }
+        fn ds(&self) -> T {
+            (**self).ds()
+        }
+    }
+
     impl<T: PtrTrait> Field<T> for DipoleField<T> {
         fn get_fields_at(&self, _time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
             return Some(earth_dipole::<T>(x, y, z));
