@@ -13,6 +13,7 @@ for file in tqdm(files):
     x/=re
     y/=re
     z/=re
+    print(x,y,z)
     #XY Plot
     if (sys.argv[1]=="XY"):
         plt.scatter(x,y,s=0.1,c='w')

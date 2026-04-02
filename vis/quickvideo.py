@@ -17,12 +17,12 @@ def plotFile(input):
     #XY Plot
     if (sys.argv[1]=="XY"):
         plt.scatter(x,y,s=0.1,c='w')
-        plt.title("Equatorial Slice | "+"Time= "+str(time)+" s")
+        plt.title("Equatorial Slice | ")
         plt.xlabel("X [RE]")
         plt.ylabel("Y [RE]")
     elif (sys.argv[1]=="XZ"):
         plt.scatter(x,z,s=0.1,c='w')
-        plt.title("Meridional Slice | "+"Time= "+str(time)+" s")
+        plt.title("Meridional Slice | ")
         plt.xlabel("X [RE]")
         plt.ylabel("Z [RE]")
     lim=45

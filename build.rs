@@ -3,9 +3,30 @@ use std::process::Command;
 use std::{env, path::PathBuf};
 
 fn main() {
+    let skip_optional = env::var("VLSVRS_SKIP_OPTIONAL").is_ok();
+
     let zfp_dst = cmake::Config::new("external/zfp")
         .define("BUILD_SHARED_LIBS", "OFF")
         .build();
+
+    if skip_optional {
+        println!("cargo:warning=VLSVRS_SKIP_OPTIONAL set: skipping Octree and MLP builds.");
+        println!("cargo:rustc-cfg=no_octree");
+        println!("cargo:rustc-cfg=no_nn");
+        for cfg in ["no_nn", "no_octree"] {
+            println!("cargo:rustc-check-cfg=cfg({cfg})");
+        }
+        let zfp_lib_dir = zfp_dst.join("lib");
+        let zfp_lib64_dir = zfp_dst.join("lib64");
+        if zfp_lib64_dir.exists() {
+            println!("cargo:rustc-link-search=native={}", zfp_lib64_dir.display());
+        } else {
+            println!("cargo:rustc-link-search=native={}", zfp_lib_dir.display());
+        }
+        println!("cargo:rustc-link-lib=static=zfp");
+        println!("cargo:rerun-if-env-changed=VLSVRS_SKIP_OPTIONAL");
+        return;
+    }
     let eigen_dst = cmake::Config::new("external/eigen")
         .define("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
         .build();
@@ -128,6 +149,7 @@ fn main() {
         println!("cargo:rustc-check-cfg=cfg({cfg})");
     }
 
+    println!("cargo:rerun-if-env-changed=VLSVRS_SKIP_OPTIONAL");
     println!("cargo:rerun-if-env-changed=MLP_COMPRESSION_DIR");
     println!("cargo:rerun-if-changed=external/tucker-octree/toctree.cpp");
 
