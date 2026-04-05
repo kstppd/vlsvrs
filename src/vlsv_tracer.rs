@@ -68,6 +68,10 @@ struct Args {
     /// L-shell
     #[arg(short, long, default_value_t = 10.0)]
     lshell: f64,
+
+    /// Skip saving files as in DRY RUN
+    #[arg(short, long, default_value_t = false)]
+    dry: bool,
 }
 
 pub fn push_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
@@ -221,7 +225,9 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
             );
             backtrace_population_cpu_adpt(&mut pop_arc, &fields, tout_signed, &mut actual_time);
             let fname = format!("{}.{:07}.ptr", args.output, out_count);
-            pop_arc.lock().unwrap().save(&fname);
+            if !args.dry {
+                pop_arc.lock().unwrap().save(&fname);
+            }
             out_count += 1;
         }
     } else {
@@ -233,7 +239,9 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
             );
             push_population_cpu_adpt(&mut pop_arc, &fields, tout_signed, &mut actual_time);
             let fname = format!("{}.{:07}.ptr", args.output, out_count);
-            pop_arc.lock().unwrap().save(&fname);
+            if !args.dry {
+                pop_arc.lock().unwrap().save(&fname);
+            }
             out_count += 1;
         }
     }
