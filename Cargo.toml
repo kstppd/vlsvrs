@@ -60,6 +60,11 @@ path="src/vlsv_tracer.rs"
 required-features = ["vlsv_ptr"]
 
 [[bin]]
+name="vlsv_field_line_tracer"
+path="src/vlsv_field_line_tracer.rs"
+required-features = ["vlsv_ptr"]
+
+[[bin]]
 name="vlsv_view"
 path="src/vlsv_view.rs"
 required-features = ["vlsv_view"]  
