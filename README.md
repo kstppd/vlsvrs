@@ -1,5 +1,6 @@
 [![Release to TestPyPI](https://github.com/kstppd/vlsvrs/actions/workflows/release.yml/badge.svg?branch=analysator)](https://github.com/kstppd/vlsvrs/actions/workflows/release.yml)
 # VLSVRS
+![Demo](video.gif?v=1.1) 
 
 Motivation:
 I hate all available methods of reading in VLSV files.
@@ -178,7 +179,6 @@ let data:Array4<_> = f.read_vdf::<f32>(256, "proton")).unwrap();
   Particle tracing routines using fields from Vlasiator.
     **Keywords:**
     get_fields_at, new_with_energy_at_Lshell, boris, larmor_radius, borris_adaptive
-    ![Demo](video.gif?v=1.1) 
 
 ## 3) MOD_VLSV_EXPORTS
   Creates C and Python interfaces for VLSV_READER.
