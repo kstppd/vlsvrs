@@ -4157,9 +4157,13 @@ pub mod mod_vlsv_tracing {
     impl<T: PtrTrait> Field<T> for VlsvDynamicField<T> {
         fn get_fields_at(&self, time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
             if self.timeline.is_empty() {
+                eprintln!("File timeline is empty! Something is seriously wrong!");
                 return None;
             }
             if self.timeline.len() == 1 {
+                eprintln!(
+                    "File timeline has only one element! Something is seriously wrong or you should be using single file tracing"
+                );
                 return self.timeline[0].1.get_fields_at(time, x, y, z);
             }
             let mut i = 0;
