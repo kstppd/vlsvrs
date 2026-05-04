@@ -1616,11 +1616,13 @@ pub mod mod_vlsv_reader {
             );
             self.read_variable_into::<u32>(None, Some(blockspercell), &mut blocks_per_cell);
 
-            let index = cids_with_blocks
-                .iter()
-                .position(|&v| v == cid)
-                .expect("CID DOES NOT CONTAIN VDF!");
-
+            let index_res = cids_with_blocks.iter().position(|&v| v == cid);
+            let index = if let Some(v) = index_res {
+                v
+            } else {
+                println!("Available cids with blocks{:?}", cids_with_blocks);
+                panic!("CID DOES NOT CONTAINS VDF!");
+            };
             let read_size = blocks_per_cell[index] as usize;
             let start_block = blocks_per_cell[..index]
                 .iter()
