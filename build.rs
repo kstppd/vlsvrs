@@ -103,7 +103,7 @@ fn main() {
                 ml_lib_path.to_str().unwrap(),
                 "-Xcompiler=-fPIC",
                 "-lcublas",
-                "-lblas",
+                "-lopenblas",
             ]);
         } else if cc == "hipcc" {
             gpu_cmd.args(&[
