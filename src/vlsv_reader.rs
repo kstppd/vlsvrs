@@ -713,6 +713,27 @@ pub mod mod_vlsv_reader {
                             *out = i32::from_le_bytes(src.try_into().unwrap()) as f32;
                         });
                 }
+                //u32 => f32
+                (DataType::Uint, 4, DataType::Float, 4) => {
+                    let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
+                    src_bytes
+                        .chunks_exact(4)
+                        .zip(dst_f32)
+                        .for_each(|(src, out)| {
+                            *out = u32::from_le_bytes(src.try_into().unwrap()) as f32;
+                        });
+                }
+                //u64 => f32
+                (DataType::Uint, 8, DataType::Float, 4) => {
+                    let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
+                    src_bytes
+                        .chunks_exact(8)
+                        .zip(dst_f32)
+                        .for_each(|(src, out)| {
+                            *out = u64::from_le_bytes(src.try_into().unwrap()) as f32;
+                        });
+                }
+
                 _ => panic!(
                     "Incompatible read: {type_on_disk:?}({size_on_disk}) => {type_of_t:?}({size_of_t})"
                 ),

@@ -20,10 +20,8 @@ Author:
 struct Args {
     /// Path to the first .vlsv file
     file1: String,
-
     /// Path to the second .vlsv file
     file2: String,
-
     #[command(subcommand)]
     command: Command,
 }
@@ -36,6 +34,8 @@ enum Command {
         #[arg(short, long)]
         variable: String,
     },
+    /// All variables
+    Vars {},
 
     /// Diff VDFs
     Vdf {
@@ -93,27 +93,27 @@ fn diff_arrays(var1: &Array4<f32>, var2: &Array4<f32>) {
     let rel_l2 = l2 / rel_l2_denom.sqrt().max(f32::EPSILON);
     let rel_linf = linf / rel_linf_denom.max(f32::EPSILON);
 
-    println!("------|----------------------|----------------------|");
+    println!("\t------|----------------------|----------------------|");
     println!(
-        "Dims: | {:<20} | {:<20} |",
+        "\tDims: | {:<20} | {:<20} |",
         format!("{:?}", var1.shape()),
         format!("{:?}", var2.shape())
     );
-    println!("Mean: | {:<20.6e} | {:<20.6e} |", var1_mean, var2_mean);
-    println!("Std : | {:<20.6e} | {:<20.6e} |", var1_std, var2_std);
-    println!("Min : | {:<20.6e} | {:<20.6e} |", var1_min, var2_min);
-    println!("Max : | {:<20.6e} | {:<20.6e} |", var1_max, var2_max);
+    println!("\tMean: | {:<20.6e} | {:<20.6e} |", var1_mean, var2_mean);
+    println!("\tStd : | {:<20.6e} | {:<20.6e} |", var1_std, var2_std);
+    println!("\tMin : | {:<20.6e} | {:<20.6e} |", var1_min, var2_min);
+    println!("\tMax : | {:<20.6e} | {:<20.6e} |", var1_max, var2_max);
 
     println!();
-    println!("Error Statistics");
-    println!("L1   : {:<20.6e}", l1);
-    println!("L2   : {:<20.6e}", l2);
-    println!("Linf : {:<20.6e}", linf);
-    println!("MAE  : {:<20.6e}", mae);
-    println!("RMSE : {:<20.6e}", rmse);
-    println!("rL1  : {:<20.6e}", rel_l1);
-    println!("rL2  : {:<20.6e}", rel_l2);
-    println!("rLinf: {:<20.6e}", rel_linf);
+    println!("\tError Statistics");
+    println!("\tL1   : {:<20.6e}", l1);
+    println!("\tL2   : {:<20.6e}", l2);
+    println!("\tLinf : {:<20.6e}", linf);
+    println!("\tMAE  : {:<20.6e}", mae);
+    println!("\tRMSE : {:<20.6e}", rmse);
+    println!("\trL1  : {:<20.6e}", rel_l1);
+    println!("\trL2  : {:<20.6e}", rel_l2);
+    println!("\trLinf: {:<20.6e}", rel_linf);
 }
 
 fn diff_vdfs(var1: &HashMap<usize, f32>, var2: &HashMap<usize, f32>) {
@@ -255,6 +255,16 @@ fn main() -> ExitCode {
                 .read_variable::<f32>(&variable, None)
                 .expect("Could not read variable from second vlsv file!");
             diff_arrays(&var1, &var2);
+        }
+        Command::Vars {} => {
+            for var in f1.variables().keys() {
+                println!("Diffing {}", var);
+                let var1 = f1.read_variable::<f32>(&var, None);
+                let var2 = f2.read_variable::<f32>(&var, None);
+                if let (Some(v1), Some(v2)) = (var1, var2) {
+                    diff_arrays(&v1, &v2);
+                }
+            }
         }
         Command::Vdf { cid } => {
             let var1 = f1
