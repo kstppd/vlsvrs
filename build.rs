@@ -95,7 +95,8 @@ fn main() {
             gpu_cmd.args(&[
                 mlp_src.to_str().unwrap(),
                 "--std=c++20",
-                "-DTINYAI_MEMORY_GB=4",
+                "-DTINYAI_MEMORY_GB=14",
+                "-DSKIP_HOSTBLAS",
                 "-DNOPROFILE",
                 &format!("-I{}", include_path.display()),
                 "--shared",

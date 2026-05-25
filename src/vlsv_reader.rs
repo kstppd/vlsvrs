@@ -1871,7 +1871,7 @@ pub mod mod_vlsv_reader {
 
             let sparse: T = self
                 .read_sparsity(pop, cid)
-                .unwrap_or(T::from(1e-16).unwrap());
+                .unwrap_or(T::from(1e-15).unwrap());
             match compression_used {
                 CompressionMethod::NONE => {
                     let blockids = TryInto::<VlsvDataset>::try_into(
