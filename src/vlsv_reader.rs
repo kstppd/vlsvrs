@@ -2351,10 +2351,23 @@ pub mod mod_vlsv_reader {
 
         pub fn read_sparsity<T>(&self, name: &str, cid: usize) -> Option<T>
         where
-            T: bytemuck::AnyBitPattern + Copy + Default,
+            T: bytemuck::AnyBitPattern
+                + Copy
+                + Default
+                + std::fmt::Debug
+                + std::cmp::PartialOrd
+                + Pod
+                + Zero
+                + Num
+                + NumCast
+                + std::iter::Sum
+                + Default
+                + TypeTag
+                + std::cmp::PartialOrd,
         {
-            let ret = self.read_vg_variable_at_hinted::<T>(name, &[cid], &mut [0])?;
-            ret.get(0).and_then(|v| v.get(0).copied())
+            self.read_vg_variable_at::<T>(&format!("{name}/vg_effectivesparsitythreshold"), &[cid])?
+                .get(0)
+                .copied()
         }
 
         pub fn read_variable<
