@@ -1675,6 +1675,15 @@ pub mod mod_vlsv_reader {
                     self.read_variable_into::<u8>(None, Some(target_ds), &mut mlp_bytes);
                     let mut phasespace = PhaseSpaceUnion::<f32>::new_from_buffer(&mlp_bytes)
                         .expect("Could deserialize phasespace");
+                    let ntasks = self.get_writting_tasks()?;
+                    assert_eq!(mlp_arch.len() % ntasks, 0);
+                    let arch_len = mlp_arch.len() / ntasks;
+                    let first_arch = &mlp_arch[..arch_len];
+                    for chunk in mlp_arch.chunks(arch_len) {
+                        assert_eq!(chunk, first_arch, "MLP architecture differs between ranks");
+                    }
+                    let mlp_arch_usize: Vec<usize> =
+                        first_arch.iter().map(|&x| x as usize).collect();
                     phasespace.decompress(&mlp_arch_usize, fourier_order);
                     phasespace.unnormalize_and_unscale(<f32 as NumCast>::from(sparse).unwrap());
                     let (nvx, nvy, nvz) = self.get_vspace_mesh_bbox(pop).unwrap();
@@ -2267,6 +2276,15 @@ pub mod mod_vlsv_reader {
                     self.read_variable_into::<u8>(None, Some(target_ds), &mut mlp_bytes);
                     let mut phasespace = PhaseSpaceUnion::<f32>::new_from_buffer(&mlp_bytes)
                         .expect("Could deserialize phasespace");
+                    let ntasks = self.get_writting_tasks()?;
+                    assert_eq!(mlp_arch.len() % ntasks, 0);
+                    let arch_len = mlp_arch.len() / ntasks;
+                    let first_arch = &mlp_arch[..arch_len];
+                    for chunk in mlp_arch.chunks(arch_len) {
+                        assert_eq!(chunk, first_arch, "MLP architecture differs between ranks");
+                    }
+                    let mlp_arch_usize: Vec<usize> =
+                        first_arch.iter().map(|&x| x as usize).collect();
                     phasespace.decompress(&mlp_arch_usize, fourier_order);
                     phasespace.unnormalize_and_unscale(<f32 as NumCast>::from(sparse).unwrap());
                     let bbox = self.get_vspace_mesh_bbox(pop).unwrap();

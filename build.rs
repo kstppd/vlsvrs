@@ -95,8 +95,8 @@ fn main() {
             gpu_cmd.args(&[
                 mlp_src.to_str().unwrap(),
                 "--std=c++20",
-                "-DTINYAI_MEMORY_GB=14",
-                "-DSKIP_HOSTBLAS",
+                "-DTINYAI_MEMORY_GB=15",
+                // "-DSKIP_HOSTBLAS",
                 "-DNOPROFILE",
                 &format!("-I{}", include_path.display()),
                 "--shared",
@@ -104,7 +104,7 @@ fn main() {
                 ml_lib_path.to_str().unwrap(),
                 "-Xcompiler=-fPIC",
                 "-lcublas",
-                "-lblas",
+                "-lopenblas",
             ]);
         } else if cc == "hipcc" {
             gpu_cmd.args(&[
