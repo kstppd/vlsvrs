@@ -9,4 +9,7 @@
 	url = https://github.com/libigl/eigen.git
 [submodule "external/asterix"]
 	path = external/asterix
-	url = https://github.com/fmihpc/asterix.git
+	url = https://github.com/kstppd/asterix.git
+[submodule "external/spdlog"]
+	path = external/spdlog
+	url = https://github.com/gabime/spdlog.git
