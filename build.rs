@@ -91,21 +91,25 @@ fn main() {
     if let Some(cc) = compiler {
         println!("cargo:rerun-if-changed={}", mlp_src.display());
         let mut gpu_cmd = Command::new(cc);
+        let use_host_blas = !env::var("SKIP_HOSTBLAS").is_ok();
         if cc == "nvcc" {
             gpu_cmd.args(&[
                 mlp_src.to_str().unwrap(),
                 "--std=c++20",
                 "-DTINYAI_MEMORY_GB=15",
-                // "-DSKIP_HOSTBLAS",
                 "-DNOPROFILE",
                 &format!("-I{}", include_path.display()),
                 "--shared",
                 "-o",
                 ml_lib_path.to_str().unwrap(),
                 "-Xcompiler=-fPIC",
-                "-lcublas",
-                "-lopenblas",
             ]);
+
+            if !use_host_blas {
+                gpu_cmd.arg("-DSKIP_HOSTBLAS");
+            } else {
+                gpu_cmd.arg("-lopenblas");
+            }
         } else if cc == "hipcc" {
             gpu_cmd.args(&[
                 mlp_src.to_str().unwrap(),
