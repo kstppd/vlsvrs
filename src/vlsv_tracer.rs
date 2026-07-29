@@ -12,6 +12,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
 
+const TIME_EPS: f64 = 1.0e-10;
+
 #[derive(Parser, Debug)]
 #[command(name = "vlsv_tracer", about = "Forward and backward particle tracer")]
 struct Args {
@@ -76,7 +78,7 @@ struct Args {
     dry: bool,
 
     /// File buffer size in seconds for dynamic VLSV windowing
-    #[arg(short, long, default_value_t = 10.0)]
+    #[arg(long, default_value_t = 10.0)]
     buffer_size: f64,
 }
 
@@ -157,34 +159,78 @@ enum SimulationKind {
     Dynamic,
 }
 
-fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
-    x.max(lo).min(hi)
-}
-
-fn make_window(
-    actual_time: f64,
-    tout_signed: f64,
-    buffer_size: f64,
-    tmin: f64,
-    tmax: f64,
-    backward: bool,
-) -> (f64, f64) {
-    let eps = tout_signed.abs().max(1e-9);
-
-    let (mut wmin, mut wmax) = if backward {
-        (actual_time - buffer_size, actual_time + eps)
-    } else {
-        (actual_time - eps, actual_time + buffer_size)
-    };
-
-    wmin = clamp(wmin, tmin, tmax);
-    wmax = clamp(wmax, tmin, tmax);
-
-    if wmax <= wmin {
-        wmax = (wmin + eps).min(tmax);
+fn validate_args(args: &Args) -> Result<(), String> {
+    if !args.tmin.is_finite() || !args.tmax.is_finite() || args.tmin >= args.tmax {
+        return Err(format!(
+            "Invalid time interval: tmin={} and tmax={}",
+            args.tmin, args.tmax
+        ));
     }
 
-    (wmin, wmax)
+    if !args.tout.is_finite() || args.tout <= 0.0 {
+        return Err(format!(
+            "tout must be finite and positive, got {}",
+            args.tout
+        ));
+    }
+
+    if !args.buffer_size.is_finite() || args.buffer_size <= 0.0 {
+        return Err(format!(
+            "buffer_size must be finite and positive, got {}",
+            args.buffer_size
+        ));
+    }
+
+    Ok(())
+}
+
+#[inline]
+fn trace_finished(actual_time: f64, args: &Args) -> bool {
+    if args.backward {
+        actual_time <= args.tmin + TIME_EPS
+    } else {
+        actual_time >= args.tmax - TIME_EPS
+    }
+}
+
+fn scheduled_target(schedule_origin: f64, schedule_step: u64, args: &Args) -> f64 {
+    let offset = schedule_step as f64 * args.tout.abs();
+    if args.backward {
+        (schedule_origin - offset).max(args.tmin)
+    } else {
+        (schedule_origin + offset).min(args.tmax)
+    }
+}
+
+fn make_dynamic_window(
+    current_time: f64,
+    target_time: f64,
+    tout: f64,
+    buffer_size: f64,
+    backward: bool,
+) -> (f64, f64) {
+    let guard = tout.abs().max(1.0e-9);
+    let step_size = (target_time - current_time).abs();
+    let span = buffer_size.max(step_size + guard);
+
+    if backward {
+        (current_time - span, current_time + guard)
+    } else {
+        (current_time - guard, current_time + span)
+    }
+}
+
+#[inline]
+fn range_contains_step(
+    loaded_tmin: f64,
+    loaded_tmax: f64,
+    current_time: f64,
+    target_time: f64,
+) -> bool {
+    let step_tmin = current_time.min(target_time);
+    let step_tmax = current_time.max(target_time);
+
+    loaded_tmin <= step_tmin + TIME_EPS && loaded_tmax + TIME_EPS >= step_tmax
 }
 
 fn save_population(
@@ -199,57 +245,172 @@ fn save_population(
     }
 }
 
-fn compute_requested_step(actual_time: f64, args: &Args) -> f64 {
-    let tout_abs = args.tout.abs();
-
-    if args.backward {
-        let remaining = args.tmin - actual_time;
-        remaining.max(-tout_abs)
-    } else {
-        let remaining = args.tmax - actual_time;
-        remaining.min(tout_abs)
-    }
-}
-
-fn clamp_dynamic_start_time(actual_time: &mut f64, loaded_tmin: f64, loaded_tmax: f64) {
-    if *actual_time < loaded_tmin {
-        println!(
-            "Requested start time {:.12} is before loaded field range; shifting to {:.12}",
-            *actual_time, loaded_tmin
-        );
-        *actual_time = loaded_tmin;
-    }
-    if *actual_time > loaded_tmax {
-        println!(
-            "Requested start time {:.12} is after loaded field range; shifting to {:.12}",
-            *actual_time, loaded_tmax
-        );
-        *actual_time = loaded_tmax;
-    }
-}
-
-fn clamp_step_to_loaded_range(
+fn print_trace_status(
+    pop_arc: &Arc<Mutex<ParticlePopulation<f64>>>,
+    num_particles: usize,
     actual_time: f64,
-    dt: f64,
-    loaded_tmin: f64,
-    loaded_tmax: f64,
+    loaded_range: Option<(f64, f64)>,
+    request_window: Option<(f64, f64)>,
+) {
+    let n_alive = pop_arc.lock().unwrap().count_alive();
+
+    match (loaded_range, request_window) {
+        (Some((loaded_tmin, loaded_tmax)), Some((win_tmin, win_tmax))) => println!(
+            "Tracing {} particles [{} alive] at t= {:.12} s, loaded range [{:.12}, {:.12}], request window [{:.12}, {:.12}]",
+            num_particles, n_alive, actual_time, loaded_tmin, loaded_tmax, win_tmin, win_tmax
+        ),
+        _ => println!(
+            "Tracing {} particles [{} alive] at t= {:.12} s",
+            num_particles, n_alive, actual_time
+        ),
+    }
+}
+
+fn advance_population<F: Field<f64> + Sync>(
+    pop_arc: &mut Arc<Mutex<ParticlePopulation<f64>>>,
+    fields: &F,
+    actual_time: &mut f64,
+    target_time: f64,
     backward: bool,
-) -> f64 {
+) {
+    let dt = target_time - *actual_time;
+
     if backward {
-        let min_dt = loaded_tmin - actual_time;
-        dt.max(min_dt)
+        debug_assert!(dt < 0.0);
+        backtrace_population_cpu_adpt(pop_arc, fields, dt, actual_time);
     } else {
-        let max_dt = loaded_tmax - actual_time;
-        dt.min(max_dt)
+        debug_assert!(dt > 0.0);
+        push_population_cpu_adpt(pop_arc, fields, dt, actual_time);
+    }
+
+    *actual_time = target_time;
+}
+
+fn run_fixed_field<F: Field<f64> + Sync>(
+    args: &Args,
+    fields: &F,
+    pop_arc: &mut Arc<Mutex<ParticlePopulation<f64>>>,
+    num_particles: usize,
+    actual_time: &mut f64,
+    out_count: &mut usize,
+) {
+    let schedule_origin = *actual_time;
+    let mut schedule_step: u64 = 1;
+
+    while !trace_finished(*actual_time, args) {
+        let target_time = scheduled_target(schedule_origin, schedule_step, args);
+        let dt = target_time - *actual_time;
+
+        if (args.backward && dt >= 0.0) || (!args.backward && dt <= 0.0) {
+            break;
+        }
+
+        print_trace_status(pop_arc, num_particles, *actual_time, None, None);
+        advance_population(pop_arc, fields, actual_time, target_time, args.backward);
+        save_population(pop_arc, &args.output, *out_count, args.dry);
+
+        *out_count += 1;
+        schedule_step += 1;
+    }
+}
+
+fn run_dynamic_field(
+    args: &Args,
+    vlsv_dir: &str,
+    periodic: [bool; 3],
+    pop_arc: &mut Arc<Mutex<ParticlePopulation<f64>>>,
+    num_particles: usize,
+    actual_time: &mut f64,
+    out_count: &mut usize,
+) {
+    if trace_finished(*actual_time, args) {
+        return;
+    }
+
+    let schedule_origin = *actual_time;
+    let mut schedule_step: u64 = 1;
+    let first_target = scheduled_target(schedule_origin, schedule_step, args);
+
+    let (mut win_tmin, mut win_tmax) = make_dynamic_window(
+        *actual_time,
+        first_target,
+        args.tout,
+        args.buffer_size,
+        args.backward,
+    );
+
+    let mut fields = VlsvDynamicField::<f64>::new_partial(vlsv_dir, periodic, win_tmin, win_tmax);
+    let (mut loaded_tmin, mut loaded_tmax) = fields.temporal_range();
+
+    if !range_contains_step(loaded_tmin, loaded_tmax, *actual_time, first_target) {
+        panic!(
+            "Loaded VLSV range [{loaded_tmin:.12}, {loaded_tmax:.12}] does not bracket the first exact tracer step [{:.12}, {first_target:.12}] requested through [{win_tmin:.12}, {win_tmax:.12}]. Do not shift actual_time to a file timestamp; load bracketing snapshots instead.",
+            *actual_time
+        );
+    }
+
+    while !trace_finished(*actual_time, args) {
+        let target_time = scheduled_target(schedule_origin, schedule_step, args);
+        let dt = target_time - *actual_time;
+
+        if (args.backward && dt >= 0.0) || (!args.backward && dt <= 0.0) {
+            break;
+        }
+
+        if !range_contains_step(loaded_tmin, loaded_tmax, *actual_time, target_time) {
+            (win_tmin, win_tmax) = make_dynamic_window(
+                *actual_time,
+                target_time,
+                args.tout,
+                args.buffer_size,
+                args.backward,
+            );
+
+            println!(
+                "Reloading dynamic field window -> [{:.12}, {:.12}]",
+                win_tmin, win_tmax
+            );
+
+            fields = VlsvDynamicField::<f64>::new_partial(vlsv_dir, periodic, win_tmin, win_tmax);
+            (loaded_tmin, loaded_tmax) = fields.temporal_range();
+
+            if !range_contains_step(loaded_tmin, loaded_tmax, *actual_time, target_time) {
+                panic!(
+                    "Loaded VLSV range [{loaded_tmin:.12}, {loaded_tmax:.12}] does not bracket exact tracer step [{:.12}, {target_time:.12}] requested through [{win_tmin:.12}, {win_tmax:.12}]. The tracer clock was left unchanged.",
+                    *actual_time
+                );
+            }
+        }
+
+        print_trace_status(
+            pop_arc,
+            num_particles,
+            *actual_time,
+            Some((loaded_tmin, loaded_tmax)),
+            Some((win_tmin, win_tmax)),
+        );
+
+        advance_population(pop_arc, &fields, actual_time, target_time, args.backward);
+        save_population(pop_arc, &args.output, *out_count, args.dry);
+
+        *out_count += 1;
+        schedule_step += 1;
     }
 }
 
 fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let args = Args::parse();
+
+    if let Err(message) = validate_args(&args) {
+        eprintln!("ERROR: {message}");
+        return Err(std::process::ExitCode::from(2));
+    }
+
     let periodic = [args.periodic_x, args.periodic_y, args.periodic_z];
 
     let sim_kind = if let Some(path) = &args.vlsv {
-        let meta = std::fs::metadata(path).unwrap();
+        let meta = std::fs::metadata(path)
+            .unwrap_or_else(|error| panic!("Failed to inspect VLSV path '{path}': {error}"));
         if meta.file_type().is_file() {
             SimulationKind::Static
         } else {
@@ -263,8 +424,7 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
     let charge = physical_constants::f64::PROTON_CHARGE;
 
     let default_start = if args.backward { args.tmax } else { args.tmin };
-    let mut actual_time: f64 = args.tstart.unwrap_or(default_start);
-
+    let mut actual_time = args.tstart.unwrap_or(default_start);
     let mut pop = ParticlePopulation::<f64>::new(1024, mass, charge);
 
     if let Some(filename) = &args.input {
@@ -279,13 +439,15 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
 
             let sub: Vec<f64> = line
                 .split(',')
-                .map(|s| s.trim().parse::<f64>().expect("Parse error"))
+                .map(|value| value.trim().parse::<f64>().expect("Parse error"))
                 .collect();
 
-            if sub.len() == 7 {
-                actual_time = sub[0];
-                pop.add_particle([sub[1], sub[2], sub[3], sub[4], sub[5], sub[6]], true);
+            if sub.len() != 7 {
+                panic!("Expected seven comma-separated values, got: {line}");
             }
+
+            actual_time = sub[0];
+            pop.add_particle([sub[1], sub[2], sub[3], sub[4], sub[5], sub[6]], true);
         }
     } else {
         pop = ParticlePopulation::<f64>::new_with_energy_at_Lshell(
@@ -297,6 +459,17 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
         );
     }
 
+    if !actual_time.is_finite()
+        || actual_time < args.tmin - TIME_EPS
+        || actual_time > args.tmax + TIME_EPS
+    {
+        eprintln!(
+            "ERROR: start time {:.12} is outside [{:.12}, {:.12}]",
+            actual_time, args.tmin, args.tmax
+        );
+        return Err(std::process::ExitCode::from(2));
+    }
+
     let num_particles = pop.size();
     let mut pop_arc = Arc::new(Mutex::new(pop));
     let mut out_count: usize = 0;
@@ -305,303 +478,43 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
         SimulationKind::Dynamic => {
             let vlsv_dir = args
                 .vlsv
-                .as_ref()
+                .as_deref()
                 .expect("Dynamic simulation requires --vlsv directory");
-
-            let initial_tout_signed = if args.backward {
-                -args.tout.abs()
-            } else {
-                args.tout.abs()
-            };
-
-            let (mut win_tmin, mut win_tmax) = make_window(
-                actual_time,
-                initial_tout_signed,
-                args.buffer_size,
-                args.tmin,
-                args.tmax,
-                args.backward,
+            run_dynamic_field(
+                &args,
+                vlsv_dir,
+                periodic,
+                &mut pop_arc,
+                num_particles,
+                &mut actual_time,
+                &mut out_count,
             );
-
-            let mut fields =
-                VlsvDynamicField::<f64>::new_partial(vlsv_dir, periodic, win_tmin, win_tmax);
-
-            let (mut loaded_tmin, mut loaded_tmax) = fields.temporal_range();
-            clamp_dynamic_start_time(&mut actual_time, loaded_tmin, loaded_tmax);
-
-            if args.backward {
-                while actual_time > args.tmin {
-                    let mut dt = compute_requested_step(actual_time, &args);
-                    dt =
-                        clamp_step_to_loaded_range(actual_time, dt, loaded_tmin, loaded_tmax, true);
-
-                    if dt >= 0.0 || (actual_time + dt) >= actual_time {
-                        let (new_wmin, new_wmax) = make_window(
-                            actual_time,
-                            -args.tout.abs(),
-                            args.buffer_size,
-                            args.tmin,
-                            args.tmax,
-                            true,
-                        );
-
-                        if new_wmin == win_tmin && new_wmax == win_tmax {
-                            break;
-                        }
-
-                        println!(
-                            "Reloading dynamic field window -> [{:.12}, {:.12}]",
-                            new_wmin, new_wmax
-                        );
-
-                        fields = VlsvDynamicField::<f64>::new_partial(
-                            vlsv_dir, periodic, new_wmin, new_wmax,
-                        );
-
-                        win_tmin = new_wmin;
-                        win_tmax = new_wmax;
-
-                        (loaded_tmin, loaded_tmax) = fields.temporal_range();
-                        clamp_dynamic_start_time(&mut actual_time, loaded_tmin, loaded_tmax);
-
-                        dt = compute_requested_step(actual_time, &args);
-                        dt = clamp_step_to_loaded_range(
-                            actual_time,
-                            dt,
-                            loaded_tmin,
-                            loaded_tmax,
-                            true,
-                        );
-
-                        if dt >= 0.0 || (actual_time + dt) >= actual_time {
-                            break;
-                        }
-                    }
-
-                    let n_alive = pop_arc.lock().unwrap().count_alive();
-                    println!(
-                        "Tracing {} particles [{} alive] at t= {:.12} s, loaded range [{:.12}, {:.12}], request window [{:.12}, {:.12}]",
-                        num_particles,
-                        n_alive,
-                        actual_time,
-                        loaded_tmin,
-                        loaded_tmax,
-                        win_tmin,
-                        win_tmax
-                    );
-
-                    backtrace_population_cpu_adpt(&mut pop_arc, &fields, dt, &mut actual_time);
-                    save_population(&pop_arc, &args.output, out_count, args.dry);
-                    out_count += 1;
-
-                    if actual_time <= loaded_tmin + 1e-12 {
-                        let (new_wmin, new_wmax) = make_window(
-                            actual_time,
-                            -args.tout.abs(),
-                            args.buffer_size,
-                            args.tmin,
-                            args.tmax,
-                            true,
-                        );
-
-                        if new_wmin != win_tmin || new_wmax != win_tmax {
-                            println!(
-                                "Reloading dynamic field window -> [{:.12}, {:.12}]",
-                                new_wmin, new_wmax
-                            );
-
-                            fields = VlsvDynamicField::<f64>::new_partial(
-                                vlsv_dir, periodic, new_wmin, new_wmax,
-                            );
-                            win_tmin = new_wmin;
-                            win_tmax = new_wmax;
-                            (loaded_tmin, loaded_tmax) = fields.temporal_range();
-                            clamp_dynamic_start_time(&mut actual_time, loaded_tmin, loaded_tmax);
-                        }
-                    }
-                }
-            } else {
-                while actual_time < args.tmax {
-                    let mut dt = compute_requested_step(actual_time, &args);
-                    dt = clamp_step_to_loaded_range(
-                        actual_time,
-                        dt,
-                        loaded_tmin,
-                        loaded_tmax,
-                        false,
-                    );
-
-                    if dt <= 0.0 || (actual_time + dt) <= actual_time {
-                        let (new_wmin, new_wmax) = make_window(
-                            actual_time,
-                            args.tout.abs(),
-                            args.buffer_size,
-                            args.tmin,
-                            args.tmax,
-                            false,
-                        );
-
-                        if new_wmin == win_tmin && new_wmax == win_tmax {
-                            break;
-                        }
-
-                        println!(
-                            "Reloading dynamic field window -> [{:.12}, {:.12}]",
-                            new_wmin, new_wmax
-                        );
-
-                        fields = VlsvDynamicField::<f64>::new_partial(
-                            vlsv_dir, periodic, new_wmin, new_wmax,
-                        );
-
-                        win_tmin = new_wmin;
-                        win_tmax = new_wmax;
-
-                        (loaded_tmin, loaded_tmax) = fields.temporal_range();
-                        clamp_dynamic_start_time(&mut actual_time, loaded_tmin, loaded_tmax);
-
-                        dt = compute_requested_step(actual_time, &args);
-                        dt = clamp_step_to_loaded_range(
-                            actual_time,
-                            dt,
-                            loaded_tmin,
-                            loaded_tmax,
-                            false,
-                        );
-
-                        if dt <= 0.0 || (actual_time + dt) <= actual_time {
-                            break;
-                        }
-                    }
-
-                    let n_alive = pop_arc.lock().unwrap().count_alive();
-                    println!(
-                        "Tracing {} particles [{} alive] at t= {:.12} s, loaded range [{:.12}, {:.12}], request window [{:.12}, {:.12}]",
-                        num_particles,
-                        n_alive,
-                        actual_time,
-                        loaded_tmin,
-                        loaded_tmax,
-                        win_tmin,
-                        win_tmax
-                    );
-
-                    push_population_cpu_adpt(&mut pop_arc, &fields, dt, &mut actual_time);
-                    save_population(&pop_arc, &args.output, out_count, args.dry);
-                    out_count += 1;
-
-                    if actual_time >= loaded_tmax - 1e-12 {
-                        let (new_wmin, new_wmax) = make_window(
-                            actual_time,
-                            args.tout.abs(),
-                            args.buffer_size,
-                            args.tmin,
-                            args.tmax,
-                            false,
-                        );
-
-                        if new_wmin != win_tmin || new_wmax != win_tmax {
-                            println!(
-                                "Reloading dynamic field window -> [{:.12}, {:.12}]",
-                                new_wmin, new_wmax
-                            );
-
-                            fields = VlsvDynamicField::<f64>::new_partial(
-                                vlsv_dir, periodic, new_wmin, new_wmax,
-                            );
-                            win_tmin = new_wmin;
-                            win_tmax = new_wmax;
-                            (loaded_tmin, loaded_tmax) = fields.temporal_range();
-                            clamp_dynamic_start_time(&mut actual_time, loaded_tmin, loaded_tmax);
-                        }
-                    }
-                }
-            }
         }
-
         SimulationKind::Static => {
             let vlsv_file = args
                 .vlsv
-                .as_ref()
+                .as_deref()
                 .expect("Static simulation requires --vlsv file");
-
-            let fields = VlsvStaticField::<f64>::new(vlsv_file, periodic);
-
-            if args.backward {
-                while actual_time > args.tmin {
-                    let dt = compute_requested_step(actual_time, &args);
-                    if dt >= 0.0 {
-                        break;
-                    }
-
-                    let n_alive = pop_arc.lock().unwrap().count_alive();
-                    println!(
-                        "Tracing {} particles [{} alive] at t= {:.12} s",
-                        num_particles, n_alive, actual_time
-                    );
-
-                    backtrace_population_cpu_adpt(&mut pop_arc, &fields, dt, &mut actual_time);
-                    save_population(&pop_arc, &args.output, out_count, args.dry);
-                    out_count += 1;
-                }
-            } else {
-                while actual_time < args.tmax {
-                    let dt = compute_requested_step(actual_time, &args);
-                    if dt <= 0.0 {
-                        break;
-                    }
-
-                    let n_alive = pop_arc.lock().unwrap().count_alive();
-                    println!(
-                        "Tracing {} particles [{} alive] at t= {:.12} s",
-                        num_particles, n_alive, actual_time
-                    );
-
-                    push_population_cpu_adpt(&mut pop_arc, &fields, dt, &mut actual_time);
-                    save_population(&pop_arc, &args.output, out_count, args.dry);
-                    out_count += 1;
-                }
-            }
+            let fields = VlsvStaticField::<f64>::new(&String::from(vlsv_file), periodic);
+            run_fixed_field(
+                &args,
+                &fields,
+                &mut pop_arc,
+                num_particles,
+                &mut actual_time,
+                &mut out_count,
+            );
         }
-
         SimulationKind::Other => {
             let fields = DipoleField::<f64>::new(8e15_f64);
-
-            if args.backward {
-                while actual_time > args.tmin {
-                    let dt = compute_requested_step(actual_time, &args);
-                    if dt >= 0.0 {
-                        break;
-                    }
-
-                    let n_alive = pop_arc.lock().unwrap().count_alive();
-                    println!(
-                        "Tracing {} particles [{} alive] at t= {:.12} s",
-                        num_particles, n_alive, actual_time
-                    );
-
-                    backtrace_population_cpu_adpt(&mut pop_arc, &fields, dt, &mut actual_time);
-                    save_population(&pop_arc, &args.output, out_count, args.dry);
-                    out_count += 1;
-                }
-            } else {
-                while actual_time < args.tmax {
-                    let dt = compute_requested_step(actual_time, &args);
-                    if dt <= 0.0 {
-                        break;
-                    }
-
-                    let n_alive = pop_arc.lock().unwrap().count_alive();
-                    println!(
-                        "Tracing {} particles [{} alive] at t= {:.12} s",
-                        num_particles, n_alive, actual_time
-                    );
-
-                    push_population_cpu_adpt(&mut pop_arc, &fields, dt, &mut actual_time);
-                    save_population(&pop_arc, &args.output, out_count, args.dry);
-                    out_count += 1;
-                }
-            }
+            run_fixed_field(
+                &args,
+                &fields,
+                &mut pop_arc,
+                num_particles,
+                &mut actual_time,
+                &mut out_count,
+            );
         }
     }
 
@@ -616,6 +529,62 @@ mod tests {
 
     const ANGLE_TOL_DEG: f64 = 0.5;
     const PERCENT_TOLERANCE: f64 = 0.1;
+
+    fn scheduling_args(backward: bool) -> Args {
+        Args {
+            vlsv: None,
+            tstart: Some(1418.0),
+            tmin: 1300.0,
+            tmax: 1419.0,
+            tout: 1.0,
+            backward,
+            periodic_x: false,
+            periodic_y: false,
+            periodic_z: false,
+            input: None,
+            output: "state".to_string(),
+            num_particles: 1,
+            energy_kev: 512.0,
+            lshell: 10.0,
+            dry: true,
+            buffer_size: 10.0,
+        }
+    }
+
+    #[test]
+    fn test_backward_output_schedule_remains_anchored() {
+        let args = scheduling_args(true);
+        let origin = 1418.0;
+
+        assert_eq!(scheduled_target(origin, 1, &args), 1417.0);
+        assert_eq!(scheduled_target(origin, 10, &args), 1408.0);
+        assert_eq!(scheduled_target(origin, 69, &args), 1349.0);
+        assert_eq!(scheduled_target(origin, 70, &args), 1348.0);
+    }
+
+    #[test]
+    fn test_dynamic_window_is_based_on_logical_time() {
+        let (wmin, wmax) = make_dynamic_window(1408.0, 1407.0, 1.0, 10.0, true);
+        assert_eq!(wmin, 1398.0);
+        assert_eq!(wmax, 1409.0);
+    }
+
+    #[test]
+    fn test_jittered_loaded_edge_triggers_reload_without_shortening_step() {
+        assert!(!range_contains_step(
+            1408.001598113233,
+            1418.012292310861,
+            1409.0,
+            1408.0,
+        ));
+
+        assert!(range_contains_step(
+            1398.003607842251,
+            1409.004562765789,
+            1409.0,
+            1408.0,
+        ));
+    }
 
     fn get_analytical_values(vperp: f64, bmag: f64, q: f64, m: f64) -> (f64, f64, f64) {
         let omega_c = (q.abs() * bmag) / m;
