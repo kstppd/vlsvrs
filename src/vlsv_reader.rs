@@ -886,7 +886,353 @@ pub mod mod_vlsv_reader {
             Some(count - 1)
         }
 
-        pub fn get_amr_level_batch(&self, cellids: &[u64]) -> Option<Vec<i32>> {
+        pub fn get_cell_dx_base(&self) -> Option<Array1<f64>> {
+            // Get the base cell length, no AMR
+            let x0 = self.read_scalar_parameter("xcells_ini")? as usize;
+            let y0 = self.read_scalar_parameter("ycells_ini")? as usize;
+            let z0 = self.read_scalar_parameter("zcells_ini")? as usize;
+            let extents = self
+                .get_spatial_mesh_extents()
+                .expect("Failed to read get_spatial_mesh_extents()");
+            let dx = (extents.3 - extents.0) / x0 as f64;
+            let dy = (extents.4 - extents.1) / y0 as f64;
+            let dz = (extents.5 - extents.2) / z0 as f64;
+            let retval: Array1<f64> = array![dx, dy, dz];
+            Some(retval)
+        }
+
+        pub fn get_vertex_indices<D: Clone + ndarray::Dimension>(
+            &self,
+            coords: &Array<f64, D>,
+        ) -> Option<Array2<u64>> {
+            //Handle different cases for coords, I want this function to be able to take
+
+            //either 1D or 2D array of coords => Issue with the Array::<type,dimension> is that
+            //It cannot handle operations with Array1 or Array2 it seems....
+            let crds = match coords.ndim() {
+                1 => coords.clone().into_shape_with_order((1, 3)).unwrap(),
+                2 => coords.clone().into_dimensionality::<Ix2>().ok()?,
+                _ => panic!("Wrong input shape for coords"),
+            };
+            let clen = self.get_cell_dx_base()? / 2_i32.pow(self.get_max_amr_refinement()?) as f64;
+            let extents = self
+                .get_spatial_mesh_extents()
+                .expect("Failed to read get_spatial_mesh_extents()");
+            let eps = clen.sum() / (3_f64 * 1000_f64); //average/1000
+            let mins: Array1<f64> = array![extents.0, extents.1, extents.2];
+            //let maxs:Array1::<f64> = array![xmax,ymax,zmax];
+            let retval: Array2<f64> = (crds - mins + eps) / clen;
+            let retval: Array2<u64> = retval.map(|x| *x as u64);
+            Some(retval)
+        }
+
+        pub fn get_cell_corner_vertices(
+            &mut self,
+            cellids: &[usize],
+        ) -> Option<HashMap<usize, Array2<u64>>> {
+            let corner_vertices = self.cell_corner_vertices.get_or_init(|| HashMap::new());
+            let mut cellids_vector = cellids.to_vec();
+            let cellids_masked: Vec<usize> = cellids_vector
+                .extract_if(.., |x| !corner_vertices.contains_key(&x))
+                .collect();
+            if cellids_masked.len() > 0 {
+                let mut array_out = Array::zeros((8, cellids_masked.len(), 3));
+                let coords: Array2<f64> =
+                    Array::from(self.get_cell_coordinates_batch(&cellids_masked)?);
+                let amr_levels: Vec<f64> = self
+                    .get_amr_level_batch(&cellids_masked)?
+                    .iter()
+                    .map(|x| 2u64.pow(*x as u32) as f64)
+                    .collect();
+                let amrs = Array::from_shape_vec((cellids_masked.len(), 1), amr_levels).ok()?;
+                let base = Array::from_shape_vec((1, 3), self.get_cell_dx_base()?.to_vec()).ok()?;
+                let amr = &base / &amrs;
+                // println!("{:#?}" ,amr);
+                let mut i = 0;
+                for x in [-1., 1.] {
+                    for y in [-1., 1.] {
+                        for z in [-1., 1.] {
+                            array_out
+                                .slice_mut(s![i, .., ..])
+                                .assign(&self.get_vertex_indices(
+                                    &(array![[x, y, z]] * &amr / 2. + coords.view()),
+                                )?);
+                            i += 1;
+                        }
+                    }
+                }
+                array_out.swap_axes(0, 1);
+                for (i, c) in cellids_masked.iter().enumerate() {
+                    self.cell_corner_vertices.get_mut().unwrap().insert(
+                        c.clone().to_usize()?,
+                        array_out.slice(s![i, .., ..]).to_owned(),
+                    );
+                }
+            }
+            Some(
+                self.cell_corner_vertices
+                    .get()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|x| cellids.contains(&x.0).then_some((*x.0, x.1.clone())))
+                    .collect(),
+            )
+        }
+
+        pub fn get_vertex_coordinates_from_indices(
+            &self,
+            indicises: &Array2<u64>,
+        ) -> Option<Array2<f64>> {
+            let clen = self.get_cell_dx_base()? / 2_i32.pow(self.get_max_amr_refinement()?) as f64;
+            let clen = clen.into_shape_with_order((1, 3)).unwrap();
+            let extents = self.get_spatial_mesh_extents()?;
+            let mins: Array1<f64> = array![extents.0, extents.1, extents.2];
+            let retval: Array2<f64> = clen * indicises.mapv(|x| x as f64) + mins;
+            Some(retval)
+        }
+
+        pub fn get_cellid(&self, coordinates: ArrayView2<f64>) -> Option<Array1<usize>> {
+            if coordinates.shape()[1] != 3 {
+                println!(
+                    "Coordinates not in right shape expected (N,3) got {} {}",
+                    coordinates.shape()[0],
+                    coordinates.shape()[1]
+                );
+                return None;
+            }
+            let mut cellids: Array1<usize> = Array::zeros((coordinates.shape()[0]));
+            let extents = self
+                .get_spatial_mesh_extents()
+                .expect("Failed to read get_spatial_mesh_extents()");
+            let coordinates_base = &coordinates;
+            let mut coordinates_mask = coordinates
+                .outer_iter()
+                .enumerate()
+                .filter_map(|(i, x)| {
+                    (x[0] > extents.0
+                        && x[1] > extents.1
+                        && x[2] > extents.2
+                        && x[0] < extents.3
+                        && x[1] < extents.4
+                        && x[2] < extents.5)
+                        .then_some(i)
+                })
+                .collect::<Array1<usize>>();
+            let mut cell_lengths_base = self.get_cell_dx_base().unwrap(); //.into_shape_with_order((1,3)).unwrap();
+            let x0 = self.read_scalar_parameter("xcells_ini").unwrap() as i64;
+            let y0 = self.read_scalar_parameter("ycells_ini").unwrap() as i64;
+            let z0 = self.read_scalar_parameter("zcells_ini").unwrap() as i64;
+
+            let max_amr = self.get_max_amr_refinement().unwrap();
+            let mut amr_count = 0;
+            let mut n_cells_lower: i64 = 0;
+            while amr_count <= max_amr {
+                if amr_count != 0 {
+                    let drop = self.query_cellid_exists(
+                        &coordinates_mask
+                            .iter()
+                            .map(|x| cellids[*x] as u64)
+                            .collect(),
+                    );
+                    coordinates_mask = coordinates_mask
+                        .iter()
+                        .zip(&drop)
+                        .filter_map(|(val, drop)| (!drop).then_some(*val))
+                        .collect();
+                    n_cells_lower += (1i64 << (3 * (amr_count - 1))) * (x0 * y0 * z0); //-1 to get previous loop n_cell_lower
+                }
+                if coordinates_mask.is_empty() {
+                    break;
+                };
+                let scale = (1i64 << amr_count) as f64;
+                let dx = cell_lengths_base[0] / scale;
+                let dy = cell_lengths_base[1] / scale;
+                let dz = cell_lengths_base[2] / scale;
+
+                for &indx in &coordinates_mask {
+                    let row = coordinates_base.row(indx);
+                    let ix = ((row[0] - extents.0) / dx) as i64;
+                    let iy = ((row[1] - extents.1) / dy) as i64;
+                    let iz = ((row[2] - extents.2) / dz) as i64;
+                    cellids[indx] = (ix
+                        + iy * x0 * (1 << amr_count)
+                        + iz * x0 * y0 * (1i64 << (2 * amr_count))
+                        + 1
+                        + n_cells_lower) as usize;
+                }
+                amr_count += 1;
+            }
+
+            let drop = self.query_cellid_exists(
+                &coordinates_mask
+                    .iter()
+                    .map(|x| cellids[*x] as u64)
+                    .collect(),
+            );
+            coordinates_mask.iter().zip(&drop).for_each(|(val, drop)| {
+                if !drop {
+                    cellids[*val] = 0
+                }
+            });
+            Some(cellids)
+        }
+
+        pub fn query_cellid_exists(&self, cids: &Array1<u64>) -> Array1<bool> {
+            cids.iter()
+                .map(|cid| self.cidmap().contains_key(&(*cid as usize)))
+                .collect()
+        }
+
+        pub fn build_dual_from_vertices(
+            &mut self,
+            vertices: &Array2<u64>,
+        ) -> HashMap<(u64, u64, u64), Array1<usize>> {
+            let mut todo = Vec::new();
+            let mut done = Vec::new();
+            let mut dual_sets: HashMap<(u64, u64, u64), Array1<usize>> = HashMap::new();
+            let dual_cells = self.__dual_cells.get_or_init(|| HashMap::new());
+            for (i, value) in vertices.outer_iter().enumerate() {
+                if dual_cells.contains_key(&(value[0], value[1], value[2])) {
+                    done.push(i);
+                } else {
+                    todo.push(i);
+                };
+            }
+            let todo_len = todo.len();
+            done.iter().for_each(|x| {
+                let ind = (vertices[[*x, 0]], vertices[[*x, 1]], vertices[[*x, 2]]);
+                dual_sets.insert(ind, dual_cells.get(&ind).unwrap().clone());
+            });
+            let mut indicises: Array2<u64> = Array2::zeros((todo_len, 3));
+            todo.iter().enumerate().for_each(|(i, x)| {
+                indicises
+                    .slice_mut(s![i, ..])
+                    .assign(&vertices.slice(s![*x, ..]))
+            });
+            if todo.len() > 0 {
+                let eps = 1.;
+                let mut v_cells = Array::zeros((todo_len, 8));
+                let mut v_cellcoords = Array::zeros((todo_len, 8, 3));
+                let mut ii = 0;
+                let mut vcoords = self
+                    .get_vertex_coordinates_from_indices(&indicises)
+                    .unwrap();
+                for x in [-1., 1.] {
+                    for y in [-1., 1.] {
+                        for z in [-1., 1.] {
+                            v_cellcoords
+                                .slice_mut(s![.., ii, ..])
+                                .assign(&(&vcoords + eps * array![[x, y, z]]));
+                            v_cells.slice_mut(s![.., ii]).assign(
+                                &self.get_cellid(v_cellcoords.slice(s![.., ii, ..])).unwrap(),
+                            );
+                            ii += 1;
+                        }
+                    }
+                }
+                // let v_cellcoords=self.get_cell_coordinates_batch(v_cells.mapv(|x| x as u64).as_slice().unwrap()).unwrap();
+                indicises.outer_iter().enumerate().for_each(|(i, x)| {
+                    dual_sets.insert(
+                        (x[0], x[1], x[2]),
+                        v_cells.slice(s![i, ..]).to_owned(),
+                    );
+                });
+                //bboxes unimplemented as it is not required for the script i was testing + the
+                //cell_cooridnate getting etc behave bit differently here so it's a pain to change,
+                //mostly an issue for boundary cells
+                self.__dual_cells
+                    .get_mut()
+                    .unwrap()
+                    .extend(dual_sets.clone());
+            }
+
+            dual_sets
+        }
+
+        pub fn build_cell_neighborhoods(
+            &mut self,
+            cids: &Array1<usize>,
+        ) -> HashMap<usize, Array1<usize>> {
+            let neighborset = self.__cell_neighbours.get_or_init(|| HashMap::new());
+            let mut mask: Array1<bool> = cids
+                .iter()
+                .map(|cid| !neighborset.contains_key(&cid))
+                .collect();
+
+            let mut cell_neighbors_set = HashMap::<usize, Array1<usize>>::new();
+            for ele in cids
+                .iter()
+                .filter_map(|cid| neighborset.contains_key(&cid).then_some(*cid))
+            {
+                cell_neighbors_set.insert(ele, neighborset.get(&ele).unwrap().to_owned());
+            }
+
+            if mask.len() > 0 {
+                let cids_masked = cids
+                    .iter()
+                    .zip(&mask)
+                    .filter_map(|(cid, mask)| (*mask).then_some(*cid))
+                    .collect::<Vec<_>>();
+                let mut cell_vertices = self
+                    .get_cell_corner_vertices(cids_masked.as_slice())
+                    .unwrap();
+                for (cid, verts) in cell_vertices {
+                    let mut set: HashSet<usize> = HashSet::new();
+                    self.build_dual_from_vertices(&verts)
+                        .iter()
+                        .for_each(|(_, cids)| {
+                            for cid in cids {
+                                (!set.contains(cid)).then(|| set.insert(*cid));
+                            }
+                        });
+                    cell_neighbors_set.insert(cid, set.into_iter().collect::<Array1<usize>>());
+                }
+
+                self.__cell_neighbours
+                    .get_mut()
+                    .unwrap()
+                    .extend(cell_neighbors_set.clone());
+            }
+            cell_neighbors_set
+        }
+
+        //Faster for somethings, like if you want to loop through a lot of cellids and do other stuff to
+        //them iteratively 
+        pub fn build_cell_neighborhoods_single(&mut self, cid: &usize) -> HashSet<usize> {
+            let neighborset = self.__cell_neighbours.get_or_init(|| HashMap::new());
+            let contains = neighborset.contains_key(cid);
+
+            let mut set: HashSet<usize> = HashSet::new();
+            if !contains {
+                let mut cell_vertices = self.get_cell_corner_vertices(&[*cid]).unwrap();
+                for (cid, verts) in cell_vertices {
+                    self.build_dual_from_vertices(&verts)
+                        .iter()
+                        .for_each(|(_, cids)| {
+                            for cid in cids {
+                                (!set.contains(cid)).then(|| set.insert(*cid));
+                            }
+                        });
+                }
+                self.__cell_neighbours
+                    .get_mut()
+                    .unwrap()
+                    .insert(*cid, set.clone().into_iter().collect::<Array1<usize>>());
+                set
+            } else {
+                HashSet::from_iter(
+                    self.__cell_neighbours
+                        .get()
+                        .unwrap()
+                        .get(cid)
+                        .unwrap()
+                        .clone()
+                        .into_iter(),
+                )
+            }
+        }
+
+        pub fn get_amr_level_batch(&self, cellids: &[usize]) -> Option<Vec<i32>> {
             let x0 = self.read_scalar_parameter("xcells_ini")? as u64;
             let y0 = self.read_scalar_parameter("ycells_ini")? as u64;
             let z0 = self.read_scalar_parameter("zcells_ini")? as u64;
