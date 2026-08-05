@@ -360,8 +360,8 @@ pub mod mod_vlsv_reader {
         pub filename: String,
         pub variables: OnceCell<HashMap<String, Variable>>,
         pub parameters: OnceCell<HashMap<String, Variable>>,
-        pub cell_corner_vertices: OnceCell<HashMap<usize, Array2<u64>>>,
-        __dual_cells: OnceCell<HashMap<(u64, u64, u64), Array1<usize>>>,
+        pub cell_corner_vertices: OnceCell<HashMap<usize, Array2<i64>>>,
+        __dual_cells: OnceCell<HashMap<(i64, i64, i64), Array1<usize>>>,
         __cell_neighbours: OnceCell<HashMap<usize, Array1<usize>>>,
         memmap: OnceCell<Mmap>,
         cidmap: OnceCell<std::collections::HashMap<usize, usize>>,
@@ -903,9 +903,7 @@ pub mod mod_vlsv_reader {
             let x0 = self.read_scalar_parameter("xcells_ini")? as usize;
             let y0 = self.read_scalar_parameter("ycells_ini")? as usize;
             let z0 = self.read_scalar_parameter("zcells_ini")? as usize;
-            let extents = self
-                .get_spatial_mesh_extents()
-                .expect("Failed to read get_spatial_mesh_extents()");
+            let extents = self.get_spatial_mesh_extents()?;
             let dx = (extents.3 - extents.0) / x0 as f64;
             let dy = (extents.4 - extents.1) / y0 as f64;
             let dz = (extents.5 - extents.2) / z0 as f64;
@@ -913,35 +911,24 @@ pub mod mod_vlsv_reader {
             Some(retval)
         }
 
-        pub fn get_vertex_indices<D: Clone + ndarray::Dimension>(
+        pub fn get_vertex_indices(
             &self,
-            coords: &Array<f64, D>,
-        ) -> Option<Array2<u64>> {
-            //Handle different cases for coords, I want this function to be able to take
-
-            //either 1D or 2D array of coords => Issue with the Array::<type,dimension> is that
-            //It cannot handle operations with Array1 or Array2 it seems....
-            let crds = match coords.ndim() {
-                1 => coords.clone().into_shape_with_order((1, 3)).unwrap(),
-                2 => coords.clone().into_dimensionality::<Ix2>().ok()?,
-                _ => panic!("Wrong input shape for coords"),
-            };
+            coords: &ArrayView2<f64>,
+        ) -> Option<Array2<i64>> {
             let clen = self.get_cell_dx_base()? / 2_i32.pow(self.get_max_amr_refinement()?) as f64;
-            let extents = self
-                .get_spatial_mesh_extents()
-                .expect("Failed to read get_spatial_mesh_extents()");
+            let extents = self.get_spatial_mesh_extents()?;
             let eps = clen.sum() / (3_f64 * 1000_f64); //average/1000
             let mins: Array1<f64> = array![extents.0, extents.1, extents.2];
             //let maxs:Array1::<f64> = array![xmax,ymax,zmax];
-            let retval: Array2<f64> = (crds - mins + eps) / clen;
-            let retval: Array2<u64> = retval.map(|x| *x as u64);
+            let retval: Array2<f64> = (coords.to_owned() - mins + eps) / clen;
+            let retval: Array2<i64> = retval.map(|x| *x as i64);
             Some(retval)
         }
 
         pub fn get_cell_corner_vertices(
             &mut self,
             cellids: &[usize],
-        ) -> Option<HashMap<usize, Array2<u64>>> {
+        ) -> Option<HashMap<usize, Array2<i64>>> {
             let corner_vertices = self.cell_corner_vertices.get_or_init(|| HashMap::new());
             let mut cellids_vector = cellids.to_vec();
             let cellids_masked: Vec<usize> = cellids_vector
@@ -959,7 +946,6 @@ pub mod mod_vlsv_reader {
                 let amrs = Array::from_shape_vec((cellids_masked.len(), 1), amr_levels).ok()?;
                 let base = Array::from_shape_vec((1, 3), self.get_cell_dx_base()?.to_vec()).ok()?;
                 let amr = &base / &amrs;
-                // println!("{:#?}" ,amr);
                 let mut i = 0;
                 for x in [-1., 1.] {
                     for y in [-1., 1.] {
@@ -967,7 +953,7 @@ pub mod mod_vlsv_reader {
                             array_out
                                 .slice_mut(s![i, .., ..])
                                 .assign(&self.get_vertex_indices(
-                                    &(array![[x, y, z]] * &amr / 2. + coords.view()),
+                                    &(array![[x, y, z]] * &amr / 2. + coords.view()).view(),
                                 )?);
                             i += 1;
                         }
@@ -993,10 +979,11 @@ pub mod mod_vlsv_reader {
 
         pub fn get_vertex_coordinates_from_indices(
             &self,
-            indicises: &Array2<u64>,
+            indicises: &Array2<i64>,
         ) -> Option<Array2<f64>> {
             let clen = self.get_cell_dx_base()? / 2_i32.pow(self.get_max_amr_refinement()?) as f64;
-            let clen = clen.into_shape_with_order((1, 3)).unwrap();
+            let clen = clen.into_shape_with_order((1, 3))
+                .expect("Something that should not fail failed in get_vertex_coordinates_from_indices");
             let extents = self.get_spatial_mesh_extents()?;
             let mins: Array1<f64> = array![extents.0, extents.1, extents.2];
             let retval: Array2<f64> = clen * indicises.mapv(|x| x as f64) + mins;
@@ -1005,17 +992,13 @@ pub mod mod_vlsv_reader {
 
         pub fn get_cellid(&self, coordinates: ArrayView2<f64>) -> Option<Array1<usize>> {
             if coordinates.shape()[1] != 3 {
-                println!(
-                    "Coordinates not in right shape expected (N,3) got {} {}",
-                    coordinates.shape()[0],
-                    coordinates.shape()[1]
-                );
-                return None;
+                return None; //Remember to handle this exception, this function should probably
+                             //retun Result but that may require changing other functions too to do it
             }
             let mut cellids: Array1<usize> = Array1::zeros((coordinates.shape()[0]));
             let extents = self
                 .get_spatial_mesh_extents()
-                .expect("Failed to read get_spatial_mesh_extents()");
+                .expect("Failed to read get_spatial_mesh_extents()"); //Like here, see comment above
             let coordinates_base = &coordinates;
             let mut coordinates_mask = coordinates
                 .outer_iter()
@@ -1097,11 +1080,12 @@ pub mod mod_vlsv_reader {
 
         pub fn build_dual_from_vertices(
             &mut self,
-            vertices: &Array2<u64>,
-        ) -> HashMap<(u64, u64, u64), Array1<usize>> {
+            vertices: ArrayView2<i64>, 
+        ) -> HashMap<(i64, i64, i64), Array1<usize>> {
+            //TODO:should probably check for the shape and add result return
             let mut todo = Vec::new();
             let mut done = Vec::new();
-            let mut dual_sets: HashMap<(u64, u64, u64), Array1<usize>> = HashMap::new();
+            let mut dual_sets: HashMap<(i64, i64, i64), Array1<usize>> = HashMap::new();
             let dual_cells = self.__dual_cells.get_or_init(|| HashMap::new());
             for (i, value) in vertices.outer_iter().enumerate() {
                 if dual_cells.contains_key(&(value[0], value[1], value[2])) {
@@ -1115,7 +1099,7 @@ pub mod mod_vlsv_reader {
                 let ind = (vertices[[*x, 0]], vertices[[*x, 1]], vertices[[*x, 2]]);
                 dual_sets.insert(ind, dual_cells.get(&ind).unwrap().clone());
             });
-            let mut indicises: Array2<u64> = Array2::zeros((todo_len, 3));
+            let mut indicises: Array2<i64> = Array2::zeros((todo_len, 3));
             todo.iter().enumerate().for_each(|(i, x)| {
                 indicises
                     .slice_mut(s![i, ..])
@@ -1187,7 +1171,7 @@ pub mod mod_vlsv_reader {
                     .unwrap();
                 for (cid, verts) in cell_vertices {
                     let mut set: HashSet<usize> = HashSet::new();
-                    self.build_dual_from_vertices(&verts)
+                    self.build_dual_from_vertices(verts.view())
                         .iter()
                         .for_each(|(_, cids)| {
                             for cid in cids {
@@ -1215,7 +1199,7 @@ pub mod mod_vlsv_reader {
             if !contains {
                 let mut cell_vertices = self.get_cell_corner_vertices(&[*cid]).unwrap();
                 for (cid, verts) in cell_vertices {
-                    self.build_dual_from_vertices(&verts)
+                    self.build_dual_from_vertices(verts.view())
                         .iter()
                         .for_each(|(_, cids)| {
                             for cid in cids {
@@ -5847,8 +5831,8 @@ pub mod mod_vlsv_c_exports {
 #[cfg(feature = "with_bindings")]
 pub mod mod_vlsv_py_exports {
     use super::mod_vlsv_reader::*;
-    use ndarray::{Array1, Array2, array, s};
-    use ndarray::{Array4, Ix1, Ix2};
+    use ndarray::{Array, Array1, Array2, ArrayView2,ArrayView, array, s};
+    use ndarray::{Array4, Ix1, Ix2,Ix,Dim,Axis};
     use numpy::PyReadwriteArray1;
     use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray4};
     use pyfunction;
@@ -5857,6 +5841,15 @@ pub mod mod_vlsv_py_exports {
     use pyo3::types::*;
     use pyo3::wrap_pyfunction;
 
+    #[derive(FromPyObject)]
+    enum ReadonlyArrayType<'py> {
+        F64(numpy::PyReadonlyArrayDyn<'py,f64>),
+        F32(numpy::PyReadonlyArrayDyn<'py,f32>),
+        I32(numpy::PyReadonlyArrayDyn<'py,i32>),
+        I64(numpy::PyReadonlyArrayDyn<'py,i64>),
+        U32(numpy::PyReadonlyArrayDyn<'py,u32>),
+        U64(numpy::PyReadonlyArrayDyn<'py,u64>),
+    }
     //Nested macro hack to clean up the python readers
     macro_rules! dispatch_read {
         ($self:ident, $py:ident, $variable:ident, $op:ident, $read_fn:ident) => {{
@@ -5888,6 +5881,37 @@ pub mod mod_vlsv_py_exports {
                 ),
             }
         }};
+    }
+    //convert pydyn array to a specific target shape via padding lower dimensional arrays, for
+    //example with dims=3 1D array (N) turns into (1,1,N)
+    //this is same as calling np.newaxis in numpy array[np.newaxis,:] etc
+    fn convertPyArrayToViewPadded<'py,T: numpy::Element, D>(
+        input:&'py numpy::PyReadonlyArrayDyn<T>,
+        dims: usize
+    ) -> Result<ArrayView<'py,T,D>,PyErr> where D:ndarray::Dimension {
+            // let required_dims=shape.to_vec().capacity();
+            let input_array=input.as_array();
+            let shape=input_array.shape().to_vec();
+            //this can be made more idiomatic but it is 6pm currently  
+            let output:ArrayView<'py,T,D> =match input_array.ndim()<dims {
+                true => {
+                    let mut vec=vec![1;dims-input_array.ndim()];
+                    vec.extend(shape);
+                    input_array.into_shape_with_order(vec)
+                        .expect("Something went deeply wrong reshaping the input array, this should not happen")
+                        .into_dimensionality::<D>().map_err(|_| { 
+                        PyValueError::new_err(format!(
+                            "Mismatch between dims and given dimension type D"
+                            ))
+                        })?
+                },
+                false => input_array.into_dimensionality::<D>().map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        format!("Expected {} or lower dimensional array",dims)
+                    )
+                })?,
+            };
+            Ok(output)
     }
 
     fn map_opt<T, E>(o: Option<T>, msg: E) -> PyResult<T>
@@ -6329,34 +6353,33 @@ pub mod mod_vlsv_py_exports {
             let arr: Array1<f64> = self
                 .inner
                 .get_cell_dx_base()
-                .expect("Failed to get cell_dx");
+                .expect("Failed to get cell_dx"); //The get_cell_dx cannot return none so thi is
+                                                //just formality, it panics which is not good
+                                                //but someone has to change the API in the future
             Ok(arr.into_pyarray(py).to_owned().into())
         }
         fn get_vertex_indices<'py>(
             &self,
-            coords_in: numpy::PyReadonlyArrayDyn<f64>,
+            coords_in: numpy::PyReadonlyArrayDyn<f64>, //TODO:change to use the readyonlyarray enum and
+                                                    //match, see get_cellid below
             py: Python<'py>,
-        ) -> PyResult<Py<PyArray2<u64>>> {
-            let mut input_coords = coords_in.as_array().to_owned();
-            let coords = match input_coords.ndim() {
-                1 => input_coords.into_shape_with_order((1, 3)).unwrap(),
-                2 => input_coords.into_dimensionality::<Ix2>().map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "something went wrong with converting to Array2",
-                    )
-                })?,
-                _ => panic!("Wrong input shape for coords"),
+        ) -> PyResult<Py<PyArray2<i64>>> {
+            // let mut input_coords = coords_in.as_array().to_owned();
+            let coords = convertPyArrayToViewPadded::<f64,Ix2>(&coords_in, 2)?;
+            if coords.shape()[1]!=3 {
+                return Err(PyValueError::new_err("Invalid shape for input coordinates"));
             };
-            let arr: Array2<u64> = self
+            let arr: Array2<i64> = self
                 .inner
                 .get_vertex_indices(&coords)
-                .expect("Failed to get_vertex_indices");
+                .expect("Failed to get_vertex_indices, something likely went wrong converting the input array from python to rust");
             Ok(arr.into_pyarray(py).to_owned().into())
         }
         fn build_cell_neighborhoods<'py>(
             &mut self,
             py: Python<'py>,
-            cids: numpy::PyReadonlyArrayDyn<usize>,
+            cids: numpy::PyReadonlyArrayDyn<usize>, //TODO:change to use the readyonlyarray enum and
+                                                    //match, see get_cellid below
         ) -> PyResult<Py<PyDict>> {
             let py_dict = PyDict::new(py);
             let input = cids
@@ -6375,62 +6398,57 @@ pub mod mod_vlsv_py_exports {
         fn build_dual_from_vertices<'py>(
             &mut self,
             py: Python<'py>,
-            vertices: numpy::PyReadonlyArrayDyn<u64>,
+            vertices: numpy::PyReadonlyArrayDyn<i64>, //TODO:change to use the readyonlyarray enum and
+                                                    //match, see get_cellid below
         ) -> PyResult<Py<PyDict>> {
             let py_dict = PyDict::new(py);
-            let input = vertices.as_array().to_owned();
-            let coords = match input.ndim() {
-                1 => input.into_shape_with_order((1, 3)).unwrap(),
-                2 => input.into_dimensionality::<Ix2>().map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "something went wrong with converting to Array2",
-                    )
-                })?,
-                _ => panic!("Wrong input shape for coords"),
+            let coords = convertPyArrayToViewPadded::<i64,Ix2>(&vertices, 2)?;
+            if coords.shape()[1]!=3 {
+                return Err(PyValueError::new_err("Invalid shape for input coordinates"));
             };
-            // let uh= self.inner.get_cell_corner_vertices(&input_cids).expect("uhh");
-            // let views:Vec<_>=uh.values().map(|a| a.view()).collect();
-            // let result = ndarray::concatenate(ndarray::Axis(0), &views).expect("all arrays must have 3 columns");
-            let mut duals = self.inner.build_dual_from_vertices(&coords);
+            let mut duals = self.inner.build_dual_from_vertices(coords);
             for (ind, array) in duals {
                 let numpy_arrayin = array.into_pyarray(py).to_owned();
                 py_dict.set_item(ind, numpy_arrayin)?;
             }
             Ok(py_dict.to_owned().into())
         }
+
         fn get_cellid<'py>(
             &mut self,
             py: Python<'py>,
-            coords_in: numpy::PyReadonlyArrayDyn<f64>,
+            // coords_in: numpy::PyReadonlyArrayDyn<f64>,
+            coords_in: ReadonlyArrayType<'py>
         ) -> PyResult<Py<PyArray1<usize>>> {
-            let mut input_coords = coords_in.as_array().to_owned();
-            let coords = match input_coords.ndim() {
-                1 => input_coords.into_shape_with_order((1, 3)).unwrap(),
-                2 => input_coords.into_dimensionality::<Ix2>().map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "something went wrong with converting to Array2",
-                    )
-                })?,
-                _ => panic!("Wrong input shape for coords"),
-            };
-            let result: Array1<usize> = self
-                .inner
-                .get_cellid(coords.view())
-                .expect("Failed to get cell id");
-            Ok(result.into_pyarray(py).to_owned().into())
+            
+            //This seems like the most hassle free way of doing this, just make the conversion the
+            //responibility of the user. 
+            match coords_in {
+                ReadonlyArrayType::F64(arr)=> {
+                    let coords = convertPyArrayToViewPadded::<f64,ndarray::Ix2>(&arr,2)?;
+                    let result: Array1<usize> = self
+                        .inner
+                        .get_cellid(coords).ok_or_else(|| return PyValueError::new_err(
+                            format!("Invalid shape for coordinates, expected [N, 3] got {:?}",coords.shape()))
+                        )?;
+                    Ok(result.into_pyarray(py).to_owned().into())
+                    },
+                _ =>  Err(PyValueError::new_err("Convert your array to dtype float 64"))
+            }
         }
 
         fn get_cell_corner_vertices<'py>(
             &mut self,
             py: Python<'py>,
-            cids: numpy::PyReadonlyArrayDyn<usize>,
+            cids: Vec<usize>, //TODO: change to array for consistency? 
         ) -> PyResult<Py<PyDict>> {
-            let input_cids: Vec<usize> = Vec::from(cids.clone().as_slice().unwrap());
+            // let input_cids: Vec<usize> = Vec::from(cids.clone().as_slice().unwrap());
             let py_dict = PyDict::new(py);
             for (cid, array) in self
                 .inner
-                .get_cell_corner_vertices(&input_cids)
-                .expect("Failed to get cell corner vertices")
+                .get_cell_corner_vertices(&cids)
+                .expect("Failed to get cell corner vertices") //TODO: change to return PyErr if
+                                                                //fails
             {
                 let numpy_array = array.into_pyarray(py).to_owned();
                 py_dict.set_item(cid, numpy_array)?;
