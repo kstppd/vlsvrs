@@ -5849,6 +5849,7 @@ pub mod mod_vlsv_py_exports {
         I64(numpy::PyReadonlyArrayDyn<'py,i64>),
         U32(numpy::PyReadonlyArrayDyn<'py,u32>),
         U64(numpy::PyReadonlyArrayDyn<'py,u64>),
+        USIZE(numpy::PyReadonlyArrayDyn<'py,usize>),
     }
     //Nested macro hack to clean up the python readers
     macro_rules! dispatch_read {
@@ -6360,58 +6361,75 @@ pub mod mod_vlsv_py_exports {
         }
         fn get_vertex_indices<'py>(
             &self,
-            coords_in: numpy::PyReadonlyArrayDyn<f64>, //TODO:change to use the readyonlyarray enum and
-                                                    //match, see get_cellid below
             py: Python<'py>,
+            coords_in: ReadonlyArrayType,
         ) -> PyResult<Py<PyArray2<i64>>> {
-            // let mut input_coords = coords_in.as_array().to_owned();
-            let coords = convertPyArrayToViewPadded::<f64,Ix2>(&coords_in, 2)?;
-            if coords.shape()[1]!=3 {
-                return Err(PyValueError::new_err("Invalid shape for input coordinates"));
-            };
-            let arr: Array2<i64> = self
-                .inner
-                .get_vertex_indices(&coords)
-                .expect("Failed to get_vertex_indices, something likely went wrong converting the input array from python to rust");
-            Ok(arr.into_pyarray(py).to_owned().into())
+            match coords_in {
+            ReadonlyArrayType::F64(array) => {
+                let coords = convertPyArrayToViewPadded::<f64,Ix2>(&array, 2)?;
+                if coords.shape()[1]!=3 {
+                    return Err(PyValueError::new_err("Invalid shape for input coordinates"));
+                };
+                let arr: Array2<i64> = self
+                    .inner
+                    .get_vertex_indices(&coords)
+                    .expect("Failed to get_vertex_indices, something likely went wrong converting the input array from python to rust");
+                Ok(arr.into_pyarray(py).to_owned().into())
+                }
+            _ =>  Err(PyValueError::new_err("Convert your array to dtype uint64"))
+
+            }   
         }
         fn build_cell_neighborhoods<'py>(
             &mut self,
             py: Python<'py>,
-            cids: numpy::PyReadonlyArrayDyn<usize>, //TODO:change to use the readyonlyarray enum and
-                                                    //match, see get_cellid below
+            cids_in: ReadonlyArrayType<'py>
+            // cids: numpy::PyReadonlyArrayDyn<usize>, 
         ) -> PyResult<Py<PyDict>> {
-            let py_dict = PyDict::new(py);
-            let input = cids
-                .as_array()
-                .to_owned()
-                .into_dimensionality::<Ix1>()
-                .unwrap();
-            let hashmap = self.inner.build_cell_neighborhoods(&input);
-            for (ind, array) in hashmap {
-                let numpy_arrayin = array.into_pyarray(py).to_owned();
-                py_dict.set_item(ind, numpy_arrayin)?;
+            match cids_in {
+                //Someone should come up with a nices solution of unifying the possible match arms
+                //into a new function but that is bit annoying, so if someone smarter can come up
+                //with a better solution to this?
+                ReadonlyArrayType::U64(cids) => {
+                    let py_dict = PyDict::new(py);
+                    let input = cids
+                        .as_array().map(|x| usize::try_from(*x).expect("Are you on 32bit platform?")) //Not idea but i have lost the plot
+                                                                                //on whether to use usize or not and where
+                        .to_owned()
+                        .into_dimensionality::<Ix1>()
+                        .unwrap();
+                    let hashmap = self.inner.build_cell_neighborhoods(&input);
+                    for (ind, array) in hashmap {
+                        let numpy_arrayin = array.into_pyarray(py).to_owned();
+                        py_dict.set_item(ind, numpy_arrayin)?;
+                    }
+                    Ok(py_dict.to_owned().into())
+                }
+                _ =>  Err(PyValueError::new_err("Convert your array to dtype uint64"))
             }
-            Ok(py_dict.to_owned().into())
         }
 
         fn build_dual_from_vertices<'py>(
             &mut self,
             py: Python<'py>,
-            vertices: numpy::PyReadonlyArrayDyn<i64>, //TODO:change to use the readyonlyarray enum and
-                                                    //match, see get_cellid below
+            vertices_in: ReadonlyArrayType<'py>
         ) -> PyResult<Py<PyDict>> {
-            let py_dict = PyDict::new(py);
-            let coords = convertPyArrayToViewPadded::<i64,Ix2>(&vertices, 2)?;
-            if coords.shape()[1]!=3 {
-                return Err(PyValueError::new_err("Invalid shape for input coordinates"));
-            };
-            let mut duals = self.inner.build_dual_from_vertices(coords);
-            for (ind, array) in duals {
-                let numpy_arrayin = array.into_pyarray(py).to_owned();
-                py_dict.set_item(ind, numpy_arrayin)?;
+            match vertices_in {
+                ReadonlyArrayType::I64(vertices)=>{
+                    let py_dict = PyDict::new(py);
+                    let coords = convertPyArrayToViewPadded::<i64,Ix2>(&vertices, 2)?;
+                    if coords.shape()[1]!=3 {
+                        return Err(PyValueError::new_err("Invalid shape for input coordinates"));
+                    };
+                    let mut duals = self.inner.build_dual_from_vertices(coords);
+                    for (ind, array) in duals {
+                        let numpy_arrayin = array.into_pyarray(py).to_owned();
+                        py_dict.set_item(ind, numpy_arrayin)?;
+                    }
+                    Ok(py_dict.to_owned().into())
+                }
+                _ =>  Err(PyValueError::new_err("Convert your array to dtype int64"))
             }
-            Ok(py_dict.to_owned().into())
         }
 
         fn get_cellid<'py>(
@@ -6433,7 +6451,7 @@ pub mod mod_vlsv_py_exports {
                         )?;
                     Ok(result.into_pyarray(py).to_owned().into())
                     },
-                _ =>  Err(PyValueError::new_err("Convert your array to dtype float 64"))
+                _ =>  Err(PyValueError::new_err("Convert your array to dtype float64"))
             }
         }
 
