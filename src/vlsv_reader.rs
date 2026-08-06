@@ -53,7 +53,7 @@ pub mod mod_vlsv_reader {
     use bytemuck::{Pod, Zeroable, cast_slice};
     use core::convert::TryInto;
     use memmap2::Mmap;
-    use ndarray::{Array, Array1, Array2, Array3, Array4, ArrayView1, ArrayView2, Ix1, Ix2, array};
+    use ndarray::{Array, Array1, Array2, Array3, Array4, ArrayView1, ArrayView2, array};
     use ndarray::{Axis, Order, s};
     use num_traits::{Float, FromPrimitive, Num, NumCast, ToPrimitive, Zero};
     use once_cell::sync::OnceCell;
@@ -995,7 +995,7 @@ pub mod mod_vlsv_reader {
                 return None; //Remember to handle this exception, this function should probably
                              //retun Result but that may require changing other functions too to do it
             }
-            let mut cellids: Array1<usize> = Array1::zeros((coordinates.shape()[0]));
+            let mut cellids: Array1<usize> = Array1::zeros(coordinates.shape()[0]);
             let extents = self
                 .get_spatial_mesh_extents()
                 .expect("Failed to read get_spatial_mesh_extents()"); //Like here, see comment above
@@ -1013,7 +1013,7 @@ pub mod mod_vlsv_reader {
                         .then_some(i)
                 })
                 .collect::<Array1<usize>>();
-            let mut cell_lengths_base = self.get_cell_dx_base().unwrap(); //.into_shape_with_order((1,3)).unwrap();
+            let cell_lengths_base = self.get_cell_dx_base().unwrap(); //.into_shape_with_order((1,3)).unwrap();
             let x0 = self.read_scalar_parameter("xcells_ini").unwrap() as i64;
             let y0 = self.read_scalar_parameter("ycells_ini").unwrap() as i64;
             let z0 = self.read_scalar_parameter("zcells_ini").unwrap() as i64;
@@ -1110,7 +1110,7 @@ pub mod mod_vlsv_reader {
                 let mut v_cells = Array2::zeros((todo_len, 8));
                 let mut v_cellcoords = Array3::zeros((todo_len, 8, 3));
                 let mut ii = 0;
-                let mut vcoords = self
+                let vcoords = self
                     .get_vertex_coordinates_from_indices(&indicises)
                     .unwrap();
                 for x in [-1., 1.] {
@@ -1147,7 +1147,7 @@ pub mod mod_vlsv_reader {
             cids: &Array1<usize>,
         ) -> HashMap<usize, Array1<usize>> {
             let neighborset = self.__cell_neighbours.get_or_init(|| HashMap::new());
-            let mut mask: Array1<bool> = cids
+            let mask: Array1<bool> = cids
                 .iter()
                 .map(|cid| !neighborset.contains_key(&cid))
                 .collect();
@@ -1166,7 +1166,7 @@ pub mod mod_vlsv_reader {
                     .zip(&mask)
                     .filter_map(|(cid, mask)| (*mask).then_some(*cid))
                     .collect::<Vec<_>>();
-                let mut cell_vertices = self
+                let cell_vertices = self
                     .get_cell_corner_vertices(cids_masked.as_slice())
                     .unwrap();
                 for (cid, verts) in cell_vertices {
@@ -1197,8 +1197,8 @@ pub mod mod_vlsv_reader {
 
             let mut set: HashSet<usize> = HashSet::new();
             if !contains {
-                let mut cell_vertices = self.get_cell_corner_vertices(&[*cid]).unwrap();
-                for (cid, verts) in cell_vertices {
+                let cell_vertices = self.get_cell_corner_vertices(&[*cid]).unwrap();
+                for (_cid, verts) in cell_vertices {
                     self.build_dual_from_vertices(verts.view())
                         .iter()
                         .for_each(|(_, cids)| {
