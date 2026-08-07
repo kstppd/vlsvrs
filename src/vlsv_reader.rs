@@ -53,7 +53,7 @@ pub mod mod_vlsv_reader {
     use bytemuck::{Pod, Zeroable, cast_slice};
     use core::convert::TryInto;
     use memmap2::Mmap;
-    use ndarray::{Array1, Array4, ArrayView1};
+    use ndarray::{Array, Array1, Array2, Array3, Array4, ArrayView1, ArrayView2, array};
     use ndarray::{Axis, Order, s};
     use num_traits::{Float, FromPrimitive, Num, NumCast, ToPrimitive, Zero};
     use once_cell::sync::OnceCell;
@@ -61,7 +61,10 @@ pub mod mod_vlsv_reader {
     use serde::Deserialize;
     use std::cell::RefCell;
     use std::sync::OnceLock;
-    use std::{collections::HashMap, str::FromStr};
+    use std::{
+        collections::{HashMap, HashSet},
+        str::FromStr,
+    };
     extern crate libc;
     static RE_ATTR: OnceLock<Regex> = OnceLock::new();
 
@@ -357,6 +360,9 @@ pub mod mod_vlsv_reader {
         pub filename: String,
         pub variables: OnceCell<HashMap<String, Variable>>,
         pub parameters: OnceCell<HashMap<String, Variable>>,
+        pub cell_corner_vertices: OnceCell<HashMap<usize, Array2<i64>>>,
+        __dual_cells: OnceCell<HashMap<(i64, i64, i64), Array1<usize>>>,
+        __cell_neighbours: OnceCell<HashMap<usize, Array1<usize>>>,
         memmap: OnceCell<Mmap>,
         cidmap: OnceCell<std::collections::HashMap<usize, usize>>,
         root: OnceCell<VlsvRoot>,
@@ -368,6 +374,9 @@ pub mod mod_vlsv_reader {
                 filename: filename.to_string(),
                 variables: OnceCell::new(),
                 parameters: OnceCell::new(),
+                cell_corner_vertices: OnceCell::new(),
+                __dual_cells: OnceCell::new(),
+                __cell_neighbours: OnceCell::new(),
                 memmap: OnceCell::new(),
                 cidmap: OnceCell::new(),
                 root: OnceCell::new(),
@@ -455,6 +464,9 @@ pub mod mod_vlsv_reader {
                 variables: v,
                 parameters: p,
                 memmap: OnceCell::new(),
+                cell_corner_vertices: OnceCell::new(),
+                __dual_cells: OnceCell::new(),
+                __cell_neighbours: OnceCell::new(),
                 cidmap: OnceCell::new(),
                 root: r,
             })
@@ -886,7 +898,334 @@ pub mod mod_vlsv_reader {
             Some(count - 1)
         }
 
-        pub fn get_amr_level_batch(&self, cellids: &[u64]) -> Option<Vec<i32>> {
+        pub fn get_cell_dx_base(&self) -> Option<Array1<f64>> {
+            // Get the base cell length, no AMR
+            let x0 = self.read_scalar_parameter("xcells_ini")? as usize;
+            let y0 = self.read_scalar_parameter("ycells_ini")? as usize;
+            let z0 = self.read_scalar_parameter("zcells_ini")? as usize;
+            let extents = self.get_spatial_mesh_extents()?;
+            let dx = (extents.3 - extents.0) / x0 as f64;
+            let dy = (extents.4 - extents.1) / y0 as f64;
+            let dz = (extents.5 - extents.2) / z0 as f64;
+            let retval: Array1<f64> = array![dx, dy, dz];
+            Some(retval)
+        }
+
+        pub fn get_vertex_indices(
+            &self,
+            coords: &ArrayView2<f64>,
+        ) -> Option<Array2<i64>> {
+            let clen = self.get_cell_dx_base()? / 2_i32.pow(self.get_max_amr_refinement()?) as f64;
+            let extents = self.get_spatial_mesh_extents()?;
+            let eps = clen.sum() / (3_f64 * 1000_f64); //average/1000
+            let mins: Array1<f64> = array![extents.0, extents.1, extents.2];
+            //let maxs:Array1::<f64> = array![xmax,ymax,zmax];
+            let retval: Array2<f64> = (coords.to_owned() - mins + eps) / clen;
+            let retval: Array2<i64> = retval.map(|x| *x as i64);
+            Some(retval)
+        }
+
+        pub fn get_cell_corner_vertices(
+            &mut self,
+            cellids: &[usize],
+        ) -> Option<HashMap<usize, Array2<i64>>> {
+            let corner_vertices = self.cell_corner_vertices.get_or_init(|| HashMap::new());
+            let mut cellids_vector = cellids.to_vec();
+            let cellids_masked: Vec<usize> = cellids_vector
+                .extract_if(.., |x| !corner_vertices.contains_key(&x))
+                .collect();
+            if cellids_masked.len() > 0 {
+                let mut array_out = Array::zeros((8, cellids_masked.len(), 3));
+                let coords: Array2<f64> =
+                    Array::from(self.get_cell_coordinates_batch(&cellids_masked)?);
+                let amr_levels: Vec<f64> = self
+                    .get_amr_level_batch(&cellids_masked)?
+                    .iter()
+                    .map(|x| 2u64.pow(*x as u32) as f64)
+                    .collect();
+                let amrs = Array::from_shape_vec((cellids_masked.len(), 1), amr_levels).ok()?;
+                let base = Array::from_shape_vec((1, 3), self.get_cell_dx_base()?.to_vec()).ok()?;
+                let amr = &base / &amrs;
+                let mut i = 0;
+                for x in [-1., 1.] {
+                    for y in [-1., 1.] {
+                        for z in [-1., 1.] {
+                            array_out
+                                .slice_mut(s![i, .., ..])
+                                .assign(&self.get_vertex_indices(
+                                    &(array![[x, y, z]] * &amr / 2. + coords.view()).view(),
+                                )?);
+                            i += 1;
+                        }
+                    }
+                }
+                array_out.swap_axes(0, 1);
+                for (i, c) in cellids_masked.iter().enumerate() {
+                    self.cell_corner_vertices.get_mut().unwrap().insert(
+                        c.clone().to_usize()?,
+                        array_out.slice(s![i, .., ..]).to_owned(),
+                    );
+                }
+            }
+            Some(
+                self.cell_corner_vertices
+                    .get()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|x| cellids.contains(&x.0).then_some((*x.0, x.1.clone())))
+                    .collect(),
+            )
+        }
+
+        pub fn get_vertex_coordinates_from_indices(
+            &self,
+            indicises: &Array2<i64>,
+        ) -> Option<Array2<f64>> {
+            let clen = self.get_cell_dx_base()? / 2_i32.pow(self.get_max_amr_refinement()?) as f64;
+            let clen = clen.into_shape_with_order((1, 3))
+                .expect("Something that should not fail failed in get_vertex_coordinates_from_indices");
+            let extents = self.get_spatial_mesh_extents()?;
+            let mins: Array1<f64> = array![extents.0, extents.1, extents.2];
+            let retval: Array2<f64> = clen * indicises.mapv(|x| x as f64) + mins;
+            Some(retval)
+        }
+
+        pub fn get_cellid(&self, coordinates: ArrayView2<f64>) -> Option<Array1<usize>> {
+            if coordinates.shape()[1] != 3 {
+                return None; //Remember to handle this exception, this function should probably
+                             //retun Result but that may require changing other functions too to do it
+            }
+            let mut cellids: Array1<usize> = Array1::zeros(coordinates.shape()[0]);
+            let extents = self
+                .get_spatial_mesh_extents()
+                .expect("Failed to read get_spatial_mesh_extents()"); //Like here, see comment above
+            let coordinates_base = &coordinates;
+            let mut coordinates_mask = coordinates
+                .outer_iter()
+                .enumerate()
+                .filter_map(|(i, x)| {
+                    (x[0] > extents.0
+                        && x[1] > extents.1
+                        && x[2] > extents.2
+                        && x[0] < extents.3
+                        && x[1] < extents.4
+                        && x[2] < extents.5)
+                        .then_some(i)
+                })
+                .collect::<Array1<usize>>();
+            let cell_lengths_base = self.get_cell_dx_base().unwrap(); //.into_shape_with_order((1,3)).unwrap();
+            let x0 = self.read_scalar_parameter("xcells_ini").unwrap() as i64;
+            let y0 = self.read_scalar_parameter("ycells_ini").unwrap() as i64;
+            let z0 = self.read_scalar_parameter("zcells_ini").unwrap() as i64;
+
+            let max_amr = self.get_max_amr_refinement().unwrap();
+            let mut amr_count = 0;
+            let mut n_cells_lower: i64 = 0;
+            while amr_count <= max_amr {
+                if amr_count != 0 {
+                    let drop = self.query_cellid_exists(
+                        &coordinates_mask
+                            .iter()
+                            .map(|x| cellids[*x] as u64)
+                            .collect(),
+                    );
+                    coordinates_mask = coordinates_mask
+                        .iter()
+                        .zip(&drop)
+                        .filter_map(|(val, drop)| (!drop).then_some(*val))
+                        .collect();
+                    n_cells_lower += (1i64 << (3 * (amr_count - 1))) * (x0 * y0 * z0); //-1 to get previous loop n_cell_lower
+                }
+                if coordinates_mask.is_empty() {
+                    break;
+                };
+                let scale = (1i64 << amr_count) as f64;
+                let dx = cell_lengths_base[0] / scale;
+                let dy = cell_lengths_base[1] / scale;
+                let dz = cell_lengths_base[2] / scale;
+
+                for &indx in &coordinates_mask {
+                    let row = coordinates_base.row(indx);
+                    let ix = ((row[0] - extents.0) / dx) as i64;
+                    let iy = ((row[1] - extents.1) / dy) as i64;
+                    let iz = ((row[2] - extents.2) / dz) as i64;
+                    cellids[indx] = (ix
+                        + iy * x0 * (1 << amr_count)
+                        + iz * x0 * y0 * (1i64 << (2 * amr_count))
+                        + 1
+                        + n_cells_lower) as usize;
+                }
+                amr_count += 1;
+            }
+
+            let drop = self.query_cellid_exists(
+                &coordinates_mask
+                    .iter()
+                    .map(|x| cellids[*x] as u64)
+                    .collect(),
+            );
+            coordinates_mask.iter().zip(&drop).for_each(|(val, drop)| {
+                if !drop {
+                    cellids[*val] = 0
+                }
+            });
+            Some(cellids)
+        }
+
+        pub fn query_cellid_exists(&self, cids: &Array1<u64>) -> Array1<bool> {
+            cids.iter()
+                .map(|cid| self.cidmap().contains_key(&(*cid as usize)))
+                .collect()
+        }
+
+        pub fn build_dual_from_vertices(
+            &mut self,
+            vertices: ArrayView2<i64>, 
+        ) -> HashMap<(i64, i64, i64), Array1<usize>> {
+            //TODO:should probably check for the shape and add result return
+            let mut todo = Vec::new();
+            let mut done = Vec::new();
+            let mut dual_sets: HashMap<(i64, i64, i64), Array1<usize>> = HashMap::new();
+            let dual_cells = self.__dual_cells.get_or_init(|| HashMap::new());
+            for (i, value) in vertices.outer_iter().enumerate() {
+                if dual_cells.contains_key(&(value[0], value[1], value[2])) {
+                    done.push(i);
+                } else {
+                    todo.push(i);
+                };
+            }
+            let todo_len = todo.len();
+            done.iter().for_each(|x| {
+                let ind = (vertices[[*x, 0]], vertices[[*x, 1]], vertices[[*x, 2]]);
+                dual_sets.insert(ind, dual_cells.get(&ind).unwrap().clone());
+            });
+            let mut indicises: Array2<i64> = Array2::zeros((todo_len, 3));
+            todo.iter().enumerate().for_each(|(i, x)| {
+                indicises
+                    .slice_mut(s![i, ..])
+                    .assign(&vertices.slice(s![*x, ..]))
+            });
+            if todo.len() > 0 {
+                let eps = 1.;
+                let mut v_cells = Array2::zeros((todo_len, 8));
+                let mut v_cellcoords = Array3::zeros((todo_len, 8, 3));
+                let mut ii = 0;
+                let vcoords = self
+                    .get_vertex_coordinates_from_indices(&indicises)
+                    .unwrap();
+                for x in [-1., 1.] {
+                    for y in [-1., 1.] {
+                        for z in [-1., 1.] {
+                            v_cellcoords
+                                .slice_mut(s![.., ii, ..])
+                                .assign(&(&vcoords + eps * array![[x, y, z]]));
+                            v_cells.slice_mut(s![.., ii]).assign(
+                                &self.get_cellid(v_cellcoords.slice(s![.., ii, ..])).unwrap(),
+                            );
+                            ii += 1;
+                        }
+                    }
+                }
+                // let v_cellcoords=self.get_cell_coordinates_batch(v_cells.mapv(|x| x as u64).as_slice().unwrap()).unwrap();
+                indicises.outer_iter().enumerate().for_each(|(i, x)| {
+                    dual_sets.insert((x[0], x[1], x[2]), v_cells.slice(s![i, ..]).to_owned());
+                });
+                //bboxes unimplemented as it is not required for the script i was testing + the
+                //cell_cooridnate getting etc behave bit differently here so it's a pain to change,
+                //mostly an issue for boundary cells
+                self.__dual_cells
+                    .get_mut()
+                    .unwrap()
+                    .extend(dual_sets.clone());
+            }
+
+            dual_sets
+        }
+
+        pub fn build_cell_neighborhoods(
+            &mut self,
+            cids: &Array1<usize>,
+        ) -> HashMap<usize, Array1<usize>> {
+            let neighborset = self.__cell_neighbours.get_or_init(|| HashMap::new());
+            let mask: Array1<bool> = cids
+                .iter()
+                .map(|cid| !neighborset.contains_key(&cid))
+                .collect();
+
+            let mut cell_neighbors_set = HashMap::<usize, Array1<usize>>::new();
+            for ele in cids
+                .iter()
+                .filter_map(|cid| neighborset.contains_key(&cid).then_some(*cid))
+            {
+                cell_neighbors_set.insert(ele, neighborset.get(&ele).unwrap().to_owned());
+            }
+
+            if mask.len() > 0 {
+                let cids_masked = cids
+                    .iter()
+                    .zip(&mask)
+                    .filter_map(|(cid, mask)| (*mask).then_some(*cid))
+                    .collect::<Vec<_>>();
+                let cell_vertices = self
+                    .get_cell_corner_vertices(cids_masked.as_slice())
+                    .unwrap();
+                for (cid, verts) in cell_vertices {
+                    let mut set: HashSet<usize> = HashSet::new();
+                    self.build_dual_from_vertices(verts.view())
+                        .iter()
+                        .for_each(|(_, cids)| {
+                            for cid in cids {
+                                (!set.contains(cid)).then(|| set.insert(*cid));
+                            }
+                        });
+                    cell_neighbors_set.insert(cid, set.into_iter().collect::<Array1<usize>>());
+                }
+
+                self.__cell_neighbours
+                    .get_mut()
+                    .unwrap()
+                    .extend(cell_neighbors_set.clone());
+            }
+            cell_neighbors_set
+        }
+
+        //Faster for somethings, like if you want to loop through a lot of cellids and do other stuff to
+        //them iteratively
+        pub fn build_cell_neighborhoods_single(&mut self, cid: &usize) -> HashSet<usize> {
+            let neighborset = self.__cell_neighbours.get_or_init(|| HashMap::new());
+            let contains = neighborset.contains_key(cid);
+
+            let mut set: HashSet<usize> = HashSet::new();
+            if !contains {
+                let cell_vertices = self.get_cell_corner_vertices(&[*cid]).unwrap();
+                for (_cid, verts) in cell_vertices {
+                    self.build_dual_from_vertices(verts.view())
+                        .iter()
+                        .for_each(|(_, cids)| {
+                            for cid in cids {
+                                (!set.contains(cid)).then(|| set.insert(*cid));
+                            }
+                        });
+                }
+                self.__cell_neighbours
+                    .get_mut()
+                    .unwrap()
+                    .insert(*cid, set.clone().into_iter().collect::<Array1<usize>>());
+                set
+            } else {
+                HashSet::from_iter(
+                    self.__cell_neighbours
+                        .get()
+                        .unwrap()
+                        .get(cid)
+                        .unwrap()
+                        .clone()
+                        .into_iter(),
+                )
+            }
+        }
+
+        pub fn get_amr_level_batch(&self, cellids: &[usize]) -> Option<Vec<i32>> {
             let x0 = self.read_scalar_parameter("xcells_ini")? as u64;
             let y0 = self.read_scalar_parameter("ycells_ini")? as u64;
             let z0 = self.read_scalar_parameter("zcells_ini")? as u64;
@@ -896,7 +1235,7 @@ pub mod mod_vlsv_reader {
                 return Some(vec![-1; cellids.len()]);
             }
             let mut levels = vec![0i32; cellids.len()];
-            let mut remaining: Vec<u64> = cellids.to_vec();
+            let mut remaining: Vec<usize> = cellids.to_vec();
             let mut iters: i32 = 0;
 
             loop {
@@ -906,7 +1245,7 @@ pub mod mod_vlsv_reader {
                         any_pos = true;
                         let pow8 = 8u64.saturating_pow(levels[i] as u32);
                         let sub = n0.saturating_mul(pow8);
-                        *cid = cid.saturating_sub(sub);
+                        *cid = cid.saturating_sub(sub as usize);
                         levels[i] += 1;
                     }
                 }
@@ -926,12 +1265,12 @@ pub mod mod_vlsv_reader {
         }
 
         //Cell centers here
-        pub fn get_cell_coordinate(&self, cellid: u64) -> Option<[f64; 3]> {
+        pub fn get_cell_coordinate(&self, cellid: usize) -> Option<[f64; 3]> {
             self.get_cell_coordinates_batch(&[cellid])
                 .and_then(|v| v.into_iter().next())
         }
 
-        pub fn get_cell_coordinates_batch(&self, cellids: &[u64]) -> Option<Vec<[f64; 3]>> {
+        pub fn get_cell_coordinates_batch(&self, cellids: &[usize]) -> Option<Vec<[f64; 3]>> {
             let xmin = self.read_scalar_parameter("xmin")? as f64;
             let ymin = self.read_scalar_parameter("ymin")? as f64;
             let zmin = self.read_scalar_parameter("zmin")? as f64;
@@ -957,7 +1296,7 @@ pub mod mod_vlsv_reader {
             let mut coords = Vec::<[f64; 3]>::with_capacity(cellids.len());
             for (cid, lvl_i32) in cellids.iter().copied().zip(levels.into_iter()) {
                 let lvl = if lvl_i32 < 0 { 0u32 } else { lvl_i32 as u32 };
-                let (i_f, j_f, k_f) = match cid2fineijk(cid, lvl, lmax, x0, y0, z0) {
+                let (i_f, j_f, k_f) = match cid2fineijk(cid as u64, lvl, lmax, x0, y0, z0) {
                     Some(t) => t,
                     None => {
                         coords.push([f64::NAN, f64::NAN, f64::NAN]);
@@ -5492,14 +5831,26 @@ pub mod mod_vlsv_c_exports {
 #[cfg(feature = "with_bindings")]
 pub mod mod_vlsv_py_exports {
     use super::mod_vlsv_reader::*;
-    use ndarray::Array4;
+    use ndarray::{Array, Array1, Array2, ArrayView2,ArrayView, array, s};
+    use ndarray::{Array4, Ix1, Ix2,Ix,Dim,Axis};
     use numpy::PyReadwriteArray1;
-    use numpy::{IntoPyArray, PyArray1, PyArray4};
+    use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray4};
     use pyfunction;
     use pyo3::exceptions::{PyIOError, PyValueError};
     use pyo3::prelude::*;
+    use pyo3::types::*;
     use pyo3::wrap_pyfunction;
 
+    #[derive(FromPyObject)]
+    enum ReadonlyArrayType<'py> {
+        F64(numpy::PyReadonlyArrayDyn<'py,f64>),
+        F32(numpy::PyReadonlyArrayDyn<'py,f32>),
+        I32(numpy::PyReadonlyArrayDyn<'py,i32>),
+        I64(numpy::PyReadonlyArrayDyn<'py,i64>),
+        U32(numpy::PyReadonlyArrayDyn<'py,u32>),
+        U64(numpy::PyReadonlyArrayDyn<'py,u64>),
+        USIZE(numpy::PyReadonlyArrayDyn<'py,usize>),
+    }
     //Nested macro hack to clean up the python readers
     macro_rules! dispatch_read {
         ($self:ident, $py:ident, $variable:ident, $op:ident, $read_fn:ident) => {{
@@ -5531,6 +5882,37 @@ pub mod mod_vlsv_py_exports {
                 ),
             }
         }};
+    }
+    //convert pydyn array to a specific target shape via padding lower dimensional arrays, for
+    //example with dims=3 1D array (N) turns into (1,1,N)
+    //this is same as calling np.newaxis in numpy array[np.newaxis,:] etc
+    fn convertPyArrayToViewPadded<'py,T: numpy::Element, D>(
+        input:&'py numpy::PyReadonlyArrayDyn<T>,
+        dims: usize
+    ) -> Result<ArrayView<'py,T,D>,PyErr> where D:ndarray::Dimension {
+            // let required_dims=shape.to_vec().capacity();
+            let input_array=input.as_array();
+            let shape=input_array.shape().to_vec();
+            //this can be made more idiomatic but it is 6pm currently  
+            let output:ArrayView<'py,T,D> =match input_array.ndim()<dims {
+                true => {
+                    let mut vec=vec![1;dims-input_array.ndim()];
+                    vec.extend(shape);
+                    input_array.into_shape_with_order(vec)
+                        .expect("Something went deeply wrong reshaping the input array, this should not happen")
+                        .into_dimensionality::<D>().map_err(|_| { 
+                        PyValueError::new_err(format!(
+                            "Mismatch between dims and given dimension type D"
+                            ))
+                        })?
+                },
+                false => input_array.into_dimensionality::<D>().map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        format!("Expected {} or lower dimensional array",dims)
+                    )
+                })?,
+            };
+            Ok(output)
     }
 
     fn map_opt<T, E>(o: Option<T>, msg: E) -> PyResult<T>
@@ -5967,6 +6349,129 @@ pub mod mod_vlsv_py_exports {
                 PyValueError::new_err(format!("VDF not found for cid={} pop='{}'", cid, pop))
             })?;
             Ok(map)
+        }
+        fn get_cell_dx_base<'py>(&self, py: Python<'py>) -> PyResult<Py<PyArray1<f64>>> {
+            let arr: Array1<f64> = self
+                .inner
+                .get_cell_dx_base()
+                .expect("Failed to get cell_dx"); //The get_cell_dx cannot return none so thi is
+                                                //just formality, it panics which is not good
+                                                //but someone has to change the API in the future
+            Ok(arr.into_pyarray(py).to_owned().into())
+        }
+        fn get_vertex_indices<'py>(
+            &self,
+            py: Python<'py>,
+            coords_in: ReadonlyArrayType,
+        ) -> PyResult<Py<PyArray2<i64>>> {
+            match coords_in {
+            ReadonlyArrayType::F64(array) => {
+                let coords = convertPyArrayToViewPadded::<f64,Ix2>(&array, 2)?;
+                if coords.shape()[1]!=3 {
+                    return Err(PyValueError::new_err("Invalid shape for input coordinates"));
+                };
+                let arr: Array2<i64> = self
+                    .inner
+                    .get_vertex_indices(&coords)
+                    .expect("Failed to get_vertex_indices, something likely went wrong converting the input array from python to rust");
+                Ok(arr.into_pyarray(py).to_owned().into())
+                }
+            _ =>  Err(PyValueError::new_err("Convert your array to dtype uint64"))
+
+            }   
+        }
+        fn build_cell_neighborhoods<'py>(
+            &mut self,
+            py: Python<'py>,
+            cids_in: ReadonlyArrayType<'py>
+            // cids: numpy::PyReadonlyArrayDyn<usize>, 
+        ) -> PyResult<Py<PyDict>> {
+            match cids_in {
+                //Someone should come up with a nices solution of unifying the possible match arms
+                //into a new function but that is bit annoying, so if someone smarter can come up
+                //with a better solution to this?
+                ReadonlyArrayType::U64(cids) => {
+                    let py_dict = PyDict::new(py);
+                    let input = cids
+                        .as_array().map(|x| usize::try_from(*x).expect("Are you on 32bit platform?")) //Not idea but i have lost the plot
+                                                                                //on whether to use usize or not and where
+                        .to_owned()
+                        .into_dimensionality::<Ix1>()
+                        .unwrap();
+                    let hashmap = self.inner.build_cell_neighborhoods(&input);
+                    for (ind, array) in hashmap {
+                        let numpy_arrayin = array.into_pyarray(py).to_owned();
+                        py_dict.set_item(ind, numpy_arrayin)?;
+                    }
+                    Ok(py_dict.to_owned().into())
+                }
+                _ =>  Err(PyValueError::new_err("Convert your array to dtype uint64"))
+            }
+        }
+
+        fn build_dual_from_vertices<'py>(
+            &mut self,
+            py: Python<'py>,
+            vertices_in: ReadonlyArrayType<'py>
+        ) -> PyResult<Py<PyDict>> {
+            match vertices_in {
+                ReadonlyArrayType::I64(vertices)=>{
+                    let py_dict = PyDict::new(py);
+                    let coords = convertPyArrayToViewPadded::<i64,Ix2>(&vertices, 2)?;
+                    if coords.shape()[1]!=3 {
+                        return Err(PyValueError::new_err("Invalid shape for input coordinates"));
+                    };
+                    let mut duals = self.inner.build_dual_from_vertices(coords);
+                    for (ind, array) in duals {
+                        let numpy_arrayin = array.into_pyarray(py).to_owned();
+                        py_dict.set_item(ind, numpy_arrayin)?;
+                    }
+                    Ok(py_dict.to_owned().into())
+                }
+                _ =>  Err(PyValueError::new_err("Convert your array to dtype int64"))
+            }
+        }
+
+        fn get_cellid<'py>(
+            &mut self,
+            py: Python<'py>,
+            // coords_in: numpy::PyReadonlyArrayDyn<f64>,
+            coords_in: ReadonlyArrayType<'py>
+        ) -> PyResult<Py<PyArray1<usize>>> {
+            
+            //This seems like the most hassle free way of doing this, just make the conversion the
+            //responibility of the user. 
+            match coords_in {
+                ReadonlyArrayType::F64(arr)=> {
+                    let coords = convertPyArrayToViewPadded::<f64,ndarray::Ix2>(&arr,2)?;
+                    let result: Array1<usize> = self
+                        .inner
+                        .get_cellid(coords).ok_or_else(|| return PyValueError::new_err(
+                            format!("Invalid shape for coordinates, expected [N, 3] got {:?}",coords.shape()))
+                        )?;
+                    Ok(result.into_pyarray(py).to_owned().into())
+                    },
+                _ =>  Err(PyValueError::new_err("Convert your array to dtype float64"))
+            }
+        }
+
+        fn get_cell_corner_vertices<'py>(
+            &mut self,
+            py: Python<'py>,
+            cids: Vec<usize>, //TODO: change to array for consistency? 
+        ) -> PyResult<Py<PyDict>> {
+            // let input_cids: Vec<usize> = Vec::from(cids.clone().as_slice().unwrap());
+            let py_dict = PyDict::new(py);
+            for (cid, array) in self
+                .inner
+                .get_cell_corner_vertices(&cids)
+                .expect("Failed to get cell corner vertices") //TODO: change to return PyErr if
+                                                                //fails
+            {
+                let numpy_array = array.into_pyarray(py).to_owned();
+                py_dict.set_item(cid, numpy_array)?;
+            }
+            Ok(py_dict.to_owned().into())
         }
     }
 
