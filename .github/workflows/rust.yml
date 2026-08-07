@@ -48,9 +48,12 @@ jobs:
         uv pip install git+https://github.com/fmihpc/analysator.git@dev
     - name: Build
       run: 
-    - name: Run tests
+    - name: Run basic read test
+      run: |
+        . CI_env/bin/activate
+        python ./testpackage/testpackage_vlsvread_basic.py
+    - name: Run function test
       run: |
         . CI_env/bin/activate
         python ./testpackage/testpackage_functions.py
-        python ./testpackage/testpackage_vlsvread_basic.py
 
