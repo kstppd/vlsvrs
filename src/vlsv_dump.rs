@@ -101,6 +101,13 @@ fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
         return Err(std::process::ExitCode::FAILURE);
     }
     let f = VlsvFile::new(&args.file).unwrap();
+    let v = f.read_vdf::<f32>(16, "proton").unwrap();
+    println!(
+        "Read vg_drift with dims {:?} and value = {}",
+        v.dim(),
+        v[(140, 140, 140, 0)]
+    );
+    return Ok(std::process::ExitCode::SUCCESS);
 
     if args.print_config {
         if let Err(e) = print_config(&f) {
