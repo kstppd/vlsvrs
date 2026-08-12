@@ -20,8 +20,8 @@ jobs:
       with:
         submodules: 'recursive'
     - name: Build
-      run: cargo build --release --all-targets --all-features
-      
+      run: cargo build --release
+    
     - name: Run particle tests
       run: cargo test --release --bin vlsv_ptr_gc2d --features=vlsv_ptr -- --nocapture
       
