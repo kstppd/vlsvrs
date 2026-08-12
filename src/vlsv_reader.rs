@@ -695,7 +695,7 @@ pub mod mod_vlsv_reader {
 
             //Dynamic Dispatchh
             match (type_on_disk, size_on_disk, type_of_t, size_of_t) {
-                //f32 => f64
+                // f32 => f64
                 (DataType::Float, 4, DataType::Float, 8) => {
                     let dst_f64: &mut [f64] = bytemuck::cast_slice_mut(dst);
                     src_bytes
@@ -705,7 +705,8 @@ pub mod mod_vlsv_reader {
                             *out = f32::from_le_bytes(src.try_into().unwrap()) as f64;
                         });
                 }
-                //f64 => f32
+
+                // f64 => f32
                 (DataType::Float, 8, DataType::Float, 4) => {
                     let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
                     src_bytes
@@ -715,7 +716,8 @@ pub mod mod_vlsv_reader {
                             *out = f64::from_le_bytes(src.try_into().unwrap()) as f32;
                         });
                 }
-                //i32 => f32
+
+                // i32 => f32
                 (DataType::Int, 4, DataType::Float, 4) => {
                     let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
                     src_bytes
@@ -725,8 +727,43 @@ pub mod mod_vlsv_reader {
                             *out = i32::from_le_bytes(src.try_into().unwrap()) as f32;
                         });
                 }
+
+                // i64 => f32
+                (DataType::Int, 8, DataType::Float, 4) => {
+                    let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
+                    src_bytes
+                        .chunks_exact(8)
+                        .zip(dst_f32)
+                        .for_each(|(src, out)| {
+                            *out = i64::from_le_bytes(src.try_into().unwrap()) as f32;
+                        });
+                }
+
+                // u32 => f32
+                (DataType::Uint, 4, DataType::Float, 4) => {
+                    let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
+                    src_bytes
+                        .chunks_exact(4)
+                        .zip(dst_f32)
+                        .for_each(|(src, out)| {
+                            *out = u32::from_le_bytes(src.try_into().unwrap()) as f32;
+                        });
+                }
+
+                // u64 => f32
+                (DataType::Uint, 8, DataType::Float, 4) => {
+                    let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
+                    src_bytes
+                        .chunks_exact(8)
+                        .zip(dst_f32)
+                        .for_each(|(src, out)| {
+                            *out = u64::from_le_bytes(src.try_into().unwrap()) as f32;
+                        });
+                }
+
                 _ => panic!(
-                    "Incompatible read: {type_on_disk:?}({size_on_disk}) => {type_of_t:?}({size_of_t})"
+                    "Incompatible read: {type_on_disk:?}({size_on_disk}) => \
+                    {type_of_t:?}({size_of_t})"
                 ),
             }
         }
@@ -2006,7 +2043,6 @@ pub mod mod_vlsv_reader {
                     .ok()?;
                     let mut mlp_arch: Vec<i64> = vec![0; mlp_arch_dset.arraysize];
                     self.read_variable_into::<i64>(None, Some(mlp_arch_dset), &mut mlp_arch);
-                    let mlp_arch_usize: Vec<usize> = mlp_arch.iter().map(|&x| x as usize).collect();
                     let mut target_ds = blockvariable.clone();
                     target_ds.offset += scan_bytes_per_cell[target_mlp] as usize;
                     target_ds.arraysize = mlp_headers[target_mlp].total_size;
@@ -2607,7 +2643,6 @@ pub mod mod_vlsv_reader {
                     .ok()?;
                     let mut mlp_arch: Vec<i64> = vec![0; mlp_arch_dset.arraysize];
                     self.read_variable_into::<i64>(None, Some(mlp_arch_dset), &mut mlp_arch);
-                    let mlp_arch_usize: Vec<usize> = mlp_arch.iter().map(|&x| x as usize).collect();
                     let mut target_ds = blockvariable.clone();
                     target_ds.offset += scan_bytes_per_cell[target_mlp] as usize;
                     target_ds.arraysize = mlp_headers[target_mlp].total_size;
@@ -5831,8 +5866,8 @@ pub mod mod_vlsv_c_exports {
 #[cfg(feature = "with_bindings")]
 pub mod mod_vlsv_py_exports {
     use super::mod_vlsv_reader::*;
-    use ndarray::{Array, Array1, Array2, ArrayView2,ArrayView, array, s};
-    use ndarray::{Array4, Ix1, Ix2,Ix,Dim,Axis};
+    use ndarray::{Array1, Array2, ArrayView};
+    use ndarray::{Array4, Ix1, Ix2};
     use numpy::PyReadwriteArray1;
     use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray4};
     use pyfunction;
@@ -6421,7 +6456,7 @@ pub mod mod_vlsv_py_exports {
                     if coords.shape()[1]!=3 {
                         return Err(PyValueError::new_err("Invalid shape for input coordinates"));
                     };
-                    let mut duals = self.inner.build_dual_from_vertices(coords);
+                    let duals = self.inner.build_dual_from_vertices(coords);
                     for (ind, array) in duals {
                         let numpy_arrayin = array.into_pyarray(py).to_owned();
                         py_dict.set_item(ind, numpy_arrayin)?;
@@ -6600,5 +6635,112 @@ pub mod mod_vlsv_py_exports {
         m.add_function(wrap_pyfunction!(read_vdf_f32, m)?)?;
         m.add_function(wrap_pyfunction!(read_vdf_f64, m)?)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    const FILENAME:&str="testpackage/bulk_hermite_compressed.0000001.vlsv";
+
+    fn get_parameter_hashes() -> &'static HashMap<&'static str, u64> {
+        static HASHES: OnceLock<HashMap<&'static str, u64>> = OnceLock::new();
+        HASHES.get_or_init(|| {
+            let mut m = HashMap::new();
+            m.insert("xmax", 4625616006244358176);
+            m.insert("timestep", 12154379980855545149);
+            m.insert("dt", 1497228438436165648);
+            m.insert("time", 15824917462923118125);
+            m.insert("xmin", 4625756743732769184);
+            m.insert("velocity_block_width", 12146586642436299381);
+            m.insert("COMPRESSION", 12142901079459293009);
+            m.insert("fieldSolverSubcycles", 12299727721494879672);
+            m.insert("zmax", 5267184488974889569);
+            m.insert("xcells_ini", 12123769577132206109);
+            m.insert("fileIndex", 12299727721494879672);
+            m.insert("zmin", 5267043751486478561);
+            m.insert("VDF_BYTE_SIZE", 12146586642436299381);
+            m.insert("ymin", 5313240832048309137);
+            m.insert("zcells_ini", 12299727721494879672);
+            m.insert("ymax", 5313100094559898129);
+            m.insert("version", 12154379980855545149);
+            m.insert("numWritingRanks", 12146586642436299381);
+            m.insert("ycells_ini", 12131281440574629861);
+            m
+        })
+    }
+
+    fn get_variable_hashes() -> &'static HashMap<&'static str, u64> {
+        static VARIABLE_HASHES: OnceLock<HashMap<&'static str, u64>> = OnceLock::new();
+        VARIABLE_HASHES.get_or_init(|| {
+            let mut m = HashMap::new();
+            m.insert("vg_rank", 5570274994085916933);
+            m.insert("fg_e", 4938053851045490173);
+            m.insert("proton/vg_ptensor_diagonal", 5457261194330484323);
+            m.insert("vg_pressure", 11902304950039296507);
+            m.insert("fg_rank", 2844512258834782053);
+            m.insert("vg_boundarytype", 18368728052992063269);
+            m.insert("proton/vg_v", 8573842974929242350);
+            m.insert("proton/vg_ptensor_offdiagonal", 16493939562893847851);
+            m.insert("proton/vg_blocks", 14903739026663176709);
+            m.insert("fg_b", 7465667096291947203);
+            m.insert("CellID", 17069811514626422102);
+            m.insert("vg_rhom", 3836864729098271706);
+            m.insert("proton/vg_rho", 3906649700561164944);
+            m.insert("vg_f_saved", 7774795838000271909);
+            m
+        })
+    }
+
+    #[inline]
+    fn fnv1a<T>(data: &[T]) -> u64 {
+        let byte_len = data.len() * std::mem::size_of::<T>();
+        let bytes: &[u8] = unsafe { 
+            std::slice::from_raw_parts(data.as_ptr() as *const u8, byte_len) 
+        };
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for &b in bytes {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
+    #[test]
+    fn test_file_open() {
+        let _ = mod_vlsv_reader::VlsvFile::new(FILENAME).expect("Unable to open VLSV file!");
+    }
+    
+    #[test]
+    fn test_read_parameters() {
+        let f = mod_vlsv_reader::VlsvFile::new(FILENAME).expect("Unable to open VLSV file!");
+        for param in f.parameters().keys().into_iter(){
+            if let Some(target_hash) = get_parameter_hashes().get(param.as_str()) {
+                let v = f.read_scalar_parameter(param).unwrap();
+                let this_hash=fnv1a(&v.to_ne_bytes());
+                if this_hash!=*target_hash {
+                    println!("Hash mismatch in parameter {}!,",param);
+                    panic!("Hash mismatch!");
+                }
+            }
+        }
+    }
+    
+    #[test]
+    fn test_read_variables() {
+        let f = mod_vlsv_reader::VlsvFile::new(FILENAME).expect("Unable to open VLSV file!");
+        for var in f.variables().keys().into_iter(){
+            if let Some(v) =f.read_variable::<f32>(var,None){
+                let this_hash=fnv1a(v.as_slice().unwrap());
+                if let Some(target_hash) = get_variable_hashes().get(var.as_str()) {
+                    if this_hash!=*target_hash {
+                        println!("Hash mismatch in variable{}!,",var);
+                        panic!("Hash mismatch!");
+                    }
+                }
+            } 
+        }
     }
 }

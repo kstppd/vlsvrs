@@ -140,7 +140,7 @@ fn main() {
         .flat_map(|cid| {
             let mut rng = rng();
             let coords = f
-                .get_cell_coordinate(cid as u64)
+                .get_cell_coordinate((cid as u64).try_into().unwrap())
                 .unwrap_or_else(|| panic!("Could not read in coordinates for cid {cid}"));
 
             let is_in_box = {
