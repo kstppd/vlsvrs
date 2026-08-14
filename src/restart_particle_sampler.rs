@@ -5,6 +5,7 @@ use crate::mod_vlsv_reader::VlsvFile;
 use crate::vlsv_reader::*;
 use clap::{Parser, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
+use ndarray::Array4;
 use ndarray::s;
 use rand::Rng;
 use rand::distr::Distribution;
@@ -49,18 +50,22 @@ struct Cli {
     #[arg(long, default_value_t = 1e-16)]
     sparse: f32,
 
+    /// Which population to target in the vlsv file
+    #[arg(long, default_value_t = ("proton").to_string())]
+    population: String,
+
     // Bounding Box Parameters
-    #[arg(long, default_value_t = -1.0e23)]
+    #[arg(long, default_value_t = f64::MIN)]
     xmin: f64,
-    #[arg(long, default_value_t = 1.0e23)]
+    #[arg(long, default_value_t = f64::MAX)]
     xmax: f64,
-    #[arg(long, default_value_t = -1.0e23)]
+    #[arg(long, default_value_t = f64::MIN)]
     ymin: f64,
-    #[arg(long, default_value_t = 1.0e23)]
+    #[arg(long, default_value_t = f64::MAX)]
     ymax: f64,
-    #[arg(long, default_value_t = -1.0e23)]
+    #[arg(long, default_value_t = f64::MIN)]
     zmin: f64,
-    #[arg(long, default_value_t = 1.0e23)]
+    #[arg(long, default_value_t = f64::MAX)]
     zmax: f64,
 
     /// Sampling scheme (based on thermal radius)
@@ -94,12 +99,13 @@ struct Particle {
 
 fn main() {
     let cli = Cli::parse();
+    let pop = cli.population;
     let f = VlsvFile::new(&cli.restart_file).unwrap();
     let spatial_mesh = f
         .get_spatial_mesh_bbox()
         .unwrap_or_else(|| panic!("Could not read spatial mesh from {}", cli.restart_file));
     let velocity_mesh = f
-        .get_vspace_mesh_extents("proton")
+        .get_vspace_mesh_extents(&pop)
         .expect("Could not read vspace mesh extents");
     let ncells = spatial_mesh.0 * spatial_mesh.1 * spatial_mesh.2;
 
@@ -119,7 +125,7 @@ fn main() {
     );
 
     let (nvx, nvy, nvz) = f
-        .get_vspace_mesh_bbox("proton")
+        .get_vspace_mesh_bbox(&pop)
         .expect("Could not read vspace mesh size");
     let (vxmin, vymin, vzmin, vxmax, vymax, vzmax) = velocity_mesh;
     let dvx = (vxmax - vxmin) / nvx as f64;
@@ -135,6 +141,7 @@ fn main() {
         .progress_chars("##-"),
     );
 
+    //Main loop parallelized over CellIDs
     let particles: Vec<Option<Particle>> = cells_to_process
         .into_par_iter()
         .flat_map(|cid| {
@@ -156,12 +163,20 @@ fn main() {
             };
 
             if !is_in_box {
+                // return empty vec so does not contribute
                 return Vec::<Option<Particle>>::new();
             }
 
-            let vdf = f
-                .read_vdf::<f32>(cid, "proton")
-                .expect("Could not read VDF from cid {cid}");
+            let sparse = f.read_sparsity(&pop, cid).unwrap_or_else(|| cli.sparse);
+            let mut vdf = Array4::<f32>::ones((nvx, nvy, nvz, 1));
+            vdf = vdf * sparse;
+            f.read_vdf_into(
+                cid,
+                &pop,
+                &mut vdf,
+                (vxmin, vymin, vzmin, vxmax, vymax, vzmax),
+            )
+            .unwrap();
             let v3 = vdf.slice(s![.., .., .., 0]);
             let mut weights: Vec<f64> = Vec::with_capacity(nvx * nvy * nvz);
             let mut sum = 0.0f64;
@@ -178,6 +193,7 @@ fn main() {
             }
 
             if sum <= 0.0 {
+                // return empty vec so does not contribute
                 return Vec::<Option<Particle>>::new();
             }
             let moments_r = f
