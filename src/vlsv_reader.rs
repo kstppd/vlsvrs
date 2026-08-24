@@ -739,7 +739,6 @@ pub mod mod_vlsv_reader {
                         });
                 }
 
-                // u32 => f32
                 (DataType::Uint, 4, DataType::Float, 4) => {
                     let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
                     src_bytes
@@ -749,8 +748,6 @@ pub mod mod_vlsv_reader {
                             *out = u32::from_le_bytes(src.try_into().unwrap()) as f32;
                         });
                 }
-
-                // u64 => f32
                 (DataType::Uint, 8, DataType::Float, 4) => {
                     let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
                     src_bytes
@@ -1616,11 +1613,13 @@ pub mod mod_vlsv_reader {
             );
             self.read_variable_into::<u32>(None, Some(blockspercell), &mut blocks_per_cell);
 
-            let index = cids_with_blocks
-                .iter()
-                .position(|&v| v == cid)
-                .expect("CID DOES NOT CONTAIN VDF!");
-
+            let index_res = cids_with_blocks.iter().position(|&v| v == cid);
+            let index = if let Some(v) = index_res {
+                v
+            } else {
+                println!("Available cids with blocks{:?}", cids_with_blocks);
+                panic!("CID DOES NOT CONTAINS VDF!");
+            };
             let read_size = blocks_per_cell[index] as usize;
             let start_block = blocks_per_cell[..index]
                 .iter()
@@ -4499,6 +4498,12 @@ pub mod mod_vlsv_tracing {
             use indicatif::{ProgressBar, ProgressStyle};
             use rayon::prelude::*;
             use std::fs;
+
+            assert!(
+                tmin <= tmax,
+                "Invalid dynamic-field window: {tmin} > {tmax}"
+            );
+
             let mut files: Vec<String> = fs::read_dir(dir)
                 .unwrap()
                 .filter_map(|entry| {
@@ -4512,12 +4517,14 @@ pub mod mod_vlsv_tracing {
                 .collect();
             files.sort();
 
-            let num_files = files.len();
             let num_threads = rayon::current_num_threads();
-            println!("Loading {num_files} VLSV files using {num_threads} threads...");
+            println!(
+                "Indexing {} VLSV files using {num_threads} threads...",
+                files.len()
+            );
 
-            let pb = ProgressBar::new(num_files as u64);
-            pb.set_style(
+            let index_pb = ProgressBar::new(files.len() as u64);
+            index_pb.set_style(
                 ProgressStyle::with_template(
                     "[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
                 )
@@ -4525,29 +4532,71 @@ pub mod mod_vlsv_tracing {
                 .progress_chars("##-"),
             );
 
-            let mut timeline: Vec<(T, VlsvStaticField<T>)> = files
+            let mut indexed_files: Vec<(T, String)> = files
                 .par_iter()
-                .filter_map(|filename| {
-                    let f = VlsvFile::new(&filename).unwrap();
+                .map(|filename| {
+                    let f = VlsvFile::new(filename).unwrap();
                     let time = T::from(f.read_scalar_parameter("time").unwrap()).unwrap();
-                    if time < tmin || time > tmax {
-                        pb.inc(1);
-                        return None;
-                    }
-                    let fields = VlsvStaticField::new(filename, periodic);
-                    pb.inc(1);
-
-                    Some((time, fields))
+                    index_pb.inc(1);
+                    (time, filename.clone())
                 })
                 .collect();
 
-            pb.finish_with_message("All files loaded.");
+            index_pb.finish_with_message("VLSV timestamps indexed.");
+            indexed_files.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+            if indexed_files.len() < 2 {
+                panic!("Dynamic tracing requires at least two VLSV snapshots");
+            }
+
+            let first_at_or_after = indexed_files.partition_point(|(time, _)| *time < tmin);
+            let first_after = indexed_files.partition_point(|(time, _)| *time <= tmax);
+
+            if first_at_or_after == indexed_files.len() || first_after == 0 {
+                let data_min = indexed_files.first().unwrap().0;
+                let data_max = indexed_files.last().unwrap().0;
+                panic!(
+                    "Requested dynamic-field window [{tmin}, {tmax}] is outside data range [{data_min}, {data_max}]"
+                );
+            }
+
+            let start = first_at_or_after.saturating_sub(1);
+            let end = (first_after + 1).min(indexed_files.len());
+            let selected = &indexed_files[start..end];
+
+            println!(
+                "Loading {} VLSV files using {num_threads} threads for request [{tmin}, {tmax}]...",
+                selected.len()
+            );
+
+            let load_pb = ProgressBar::new(selected.len() as u64);
+            load_pb.set_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+                )
+                .unwrap()
+                .progress_chars("##-"),
+            );
+
+            let mut timeline: Vec<(T, VlsvStaticField<T>)> = selected
+                .par_iter()
+                .map(|(time, filename)| {
+                    let fields = VlsvStaticField::new(filename, periodic);
+                    load_pb.inc(1);
+                    (*time, fields)
+                })
+                .collect();
+
+            load_pb.finish_with_message("Dynamic field window loaded.");
             timeline.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-            let ds = if let Some(first) = timeline.first() {
-                first.1.ds()
-            } else {
-                T::zero()
-            };
+            let loaded_min = timeline.first().unwrap().0;
+            let loaded_max = timeline.last().unwrap().0;
+            if loaded_min > tmin || loaded_max < tmax {
+                eprintln!(
+                    "Warning: loaded range [{loaded_min}, {loaded_max}] does not fully bracket request [{tmin}, {tmax}]"
+                );
+            }
+            let ds = timeline.first().unwrap().1.ds();
             Self { timeline, ds }
         }
 
@@ -4562,22 +4611,30 @@ pub mod mod_vlsv_tracing {
     impl<T: PtrTrait> Field<T> for VlsvDynamicField<T> {
         fn get_fields_at(&self, time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
             if self.timeline.is_empty() {
+                eprintln!("File timeline is empty! Something is seriously wrong!");
                 return None;
             }
-            if self.timeline.len() == 1 {
-                return self.timeline[0].1.get_fields_at(time, x, y, z);
-            }
-            let mut i = 0;
-            while i + 1 < self.timeline.len() && self.timeline[i + 1].0 <= time {
-                i += 1;
-            }
-            if i + 1 == self.timeline.len() {
-                return self.timeline[i].1.get_fields_at(time, x, y, z);
-            }
+
             let (tmin, tmax) = self.temporal_range();
             if time < tmin || time > tmax {
                 panic!("Time {time} is outside of directory temporal range {tmin} - {tmax}!");
             }
+
+            if self.timeline.len() == 1 {
+                eprintln!(
+                    "File timeline has only one element! Something is seriously wrong or you should be using single file tracing"
+                );
+                return self.timeline[0].1.get_fields_at(time, x, y, z);
+            }
+
+            if time == tmax {
+                return self.timeline.last().unwrap().1.get_fields_at(time, x, y, z);
+            }
+
+            let upper = self
+                .timeline
+                .partition_point(|(snapshot_time, _)| *snapshot_time <= time);
+            let i = upper.saturating_sub(1);
 
             let (t0, ref f0) = self.timeline[i];
             let (t1, ref f1) = self.timeline[i + 1];

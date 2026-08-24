@@ -105,6 +105,8 @@ fn main() {
                 "-o",
                 ml_lib_path.to_str().unwrap(),
                 "-Xcompiler=-fPIC",
+                "-lcublas",
+                "-lopenblas",
             ]);
 
             if !use_host_blas {
