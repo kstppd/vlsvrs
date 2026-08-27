@@ -50,8 +50,8 @@ def plot_particles_over_efield(
     else:
         raise ValueError("plane must be 'XY' or 'XZ'")
 
-    x, y, z, vx, vy, vz = ptrReader.read_ptr2_file(ptr_file)
-    xi, yi, zi, vxi, vyi, vzi = ptrReader.read_ptr2_file(f'/wrk-vakka/users/souhadah/vlsvrs/{run}_sampled_box/state.0000000.ptr')
+    _,_,x, y, z, vx, vy, vz = ptrReader.read_ptr2_file(ptr_file)
+    _,xi, yi_,, zi, vxi, vyi, vzi = ptrReader.read_ptr2_file(f'/wrk-vakka/users/souhadah/vlsvrs/{run}_sampled_box/state.0000000.ptr')
 
     xRE, yRE, zRE = x/RE, y/RE, z/RE
     xiRE, yiRE, ziRE = xi/RE, yi/RE, zi/RE
@@ -167,7 +167,7 @@ OUTPUT_DIR = f"/wrk-vakka/users/souhadah/{run}/particle_tracing/VDF_sampled_box/
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 ptr_files = sorted(glob.glob(os.path.join(PTR_DIR, "state.*.ptr")))
 vlsv_files = sorted(glob.glob(os.path.join(VLSV_DIR, "bulk.*.vlsv")))
-x, y, z, vx, vy, vz = ptrReader.read_ptr2_file(ptr_files[0])
+_,x, y, z, vx, vy, vz = ptrReader.read_ptr2_file(ptr_files[0])
 init_en = 0.5 * PROTON_MASS * (vx**2 + vz**2) / EV_TO_J * 1e-3
 
 def generate_plot(idx):

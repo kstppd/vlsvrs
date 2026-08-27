@@ -9,9 +9,9 @@ plt.style.use('dark_background')
 re=6378137.0
 files=sys.argv[1::]
 
-x1,y1,z1,vx1,vy1,vz1=ptrReader.read_ptr2_file(files[0])
-x2,y2,z2,vx2,vy2,vz2=ptrReader.read_ptr2_file(files[1])
-x3,y3,z3,vx3,vy3,vz3=ptrReader.read_ptr2_file(files[2])
+_,x1,y1,z1,vx1,vy1,vz1=ptrReader.read_ptr2_file(files[0])
+_,x2,y2,z2,vx2,vy2,vz2=ptrReader.read_ptr2_file(files[1])
+_,x3,y3,z3,vx3,vy3,vz3=ptrReader.read_ptr2_file(files[2])
 
 en1=np.sqrt(vx1*vx1+vy1*vy1+vz1*vz1)
 en2=np.sqrt(vx2*vx2+vy2*vy2+vz2*vz2)

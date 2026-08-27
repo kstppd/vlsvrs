@@ -8,7 +8,7 @@ plt.style.use('dark_background')
 
 def plotFile(input):
     file,cnt=input
-    x,y,z,vx,vy,vz=ptrReader.read_ptr2_file(file)
+    _,x,y,z,vx,vy,vz=ptrReader.read_ptr2_file(file)
     print(x)
     x/=re
     y/=re
