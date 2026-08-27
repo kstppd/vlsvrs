@@ -193,6 +193,13 @@ fn advance<F: Field<f64> + Sync>(
     }
 }
 
+fn save(pop: &ParticlePopulation<f64>, args: &Args, step: u64, time: f64) {
+    if args.dry {
+        return;
+    }
+    pop.save(&format!("{}.{step:07}.ptr", args.output), time);
+}
+
 fn trace(
     args: &Args,
     mut fields: Option<Fields>,
@@ -201,9 +208,8 @@ fn trace(
     start: f64,
 ) -> Result<f64, String> {
     let mut current = start;
-    let mut loaded = (f64::NEG_INFINITY, f64::INFINITY);
-    let fname = format!("{}.{:07}.ptr", "state", 0);
-    pop.save(&fname, current as f64);
+    let mut loaded = (f64::INFINITY, f64::NEG_INFINITY);
+    save(pop, args, 0, current);
     if finished(current, args) {
         println!(
             "Start time {current:.12} s is already at the far end of [{:.12}, {:.12}], nothing to trace",
@@ -259,8 +265,7 @@ fn trace(
             target,
         );
         current = target;
-        let fname = format!("{}.{:07}.ptr", "state", step);
-        pop.save(&fname, current as f64);
+        save(pop, args, step, current);
     }
 
     Ok(current)
