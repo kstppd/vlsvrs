@@ -209,7 +209,7 @@ fn dump_snapshot(
         }
     }
     let fname = format!("field_lines.{:07}.ptr", step);
-    pop.save(&fname);
+    pop.save(&fname, 0.0_f64);
     Ok(())
 }
 
