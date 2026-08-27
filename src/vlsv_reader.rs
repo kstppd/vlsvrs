@@ -4514,7 +4514,7 @@ pub mod mod_vlsv_tracing {
             println!(
                 "\tWriting {}/{} bytes to {}",
                 data.len(),
-                cap + 8 + 8,
+                cap + 8 + 8 +9 ,
                 filename
             );
             let mut file = std::fs::File::create(filename).expect("Failed to create file");
