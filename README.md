@@ -14,7 +14,75 @@ use vlsvrs actually only use the python bindings (me included :D )**)
 
 This package is written in rust, so you will need [cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
 
-## C Bindings
+## Build instructions
+
+Clone the repository:
+
+```bash
+git clone https://github.com/kstppd/vlsvrs.git
+cd vlsvrs
+```
+
+If you do not need to read compressed VDFs with Asterix, you can skip the
+optional dependencies to speed up compilation:
+
+```bash
+export VLSVRS_SKIP_OPTIONAL=1
+```
+
+### Python Bindings
+
+If you only want to use `vlsvrs` from Python, create a virtual environment and
+install the package:
+
+```bash
+python3 -m venv env
+source env/bin/activate
+pip install .
+```
+
+### Rust binaries
+
+For more control, `vlsvrs` provides these binaries. These can be built
+individually by enabling the corresponding Cargo feature.
+
+| Binary | Feature | Source | Description |
+|---|---|---|---|
+| `vlsv_dump` | `vlsv_dump` | `src/vlsv_dump.rs` | CLI tool to see what is inside vlsv files |
+| `vlsv_diff` | `vlsv_dump` | `src/vlsv_diff.rs` | diffs vlsv files |
+| `vlsv_particle_sampler` | `vlsv_ptr` | `src/restart_particle_sampler.rs` | samples particles from VDFs |
+| `vlsv_ptr_gc2d` | `vlsv_ptr` | `src/vlsv_ptr_gc2d.rs` | GC particle tracer|
+| `vlsv_tracer` | `vlsv_ptr` | `src/vlsv_tracer.rs` | full 3D particle tracer |
+| `vlsv_field_line_tracer` | `vlsv_ptr` | `src/vlsv_field_line_tracer.rs` | 3D field line tracer |
+| `vlsv_view` | `vlsv_view` | `src/vlsv_view.rs` | cli tool to quickly visualize vlsv files using raylib|
+
+For example, to build `vlsv_tracer`:
+
+```bash
+cargo build --release --features vlsv_ptr --bin vlsv_tracer
+```
+
+Or to build `vlsv_view`:
+
+```bash
+cargo build --release --features vlsv_view --bin vlsv_view
+```
+
+To build all available binaries, enable all features:
+
+```bash
+cargo build --release --all-features --bins
+```
+
+To build the library as well:
+
+```bash
+cargo build --release --all-features
+```
+
+### C and FORTRAN bindings
+
+#### C Bindings
 
 To install the C bindings system-wide (headers and `vlsvrs` library):
 
@@ -99,7 +167,7 @@ int main(int argc, char **argv) {
 }
 ```
 
-## FORTRAN bindings
+#### FORTRAN bindings
 
 To install:
 
@@ -137,65 +205,3 @@ gfortran vlsvrs.mod main.f90 -Wall -Wextra -Wno-conversion -Wno-c-binding-type
 The module is built into the `./fortran_bindings` folder. Note the signatures:
 integer kind is 8 for cell id, and strings in fortran vs c are a bit of black
 magic, requiring null chars and trim.
-
-## Python Bindings
-
-With pip:
-
-```bash
-git clone https://github.com/kstppd/vlsvrs
-cd vlsvrs/
-pip install .
-```
-
-Or:
-
-```bash
-pip install maturin,numpy
-git clone https://github.com/kstppd/vlsvrs
-cd vlsvrs/
-maturin develop -F with_bindings --release
-#If you are building on Linux and your kernel (check with ```uname -r```) version is 5.1+ then enable io uring  <!-- rumdl-disable-line MD013 -->
-maturin develop -F with_bindings,uring --release
-```
-
-Now you can do:
-
-```python
-import vlsvrs
-f=vlsvrs.VlsvFile("bulk.vlsv")
-```
-
-## EXAMPLES
-
-```rust
-let f = VlsvFile::new("bulk.vlsv").unwrap();
-//OP: vec->scalar reduction into first component with  0|1->x(noop) 2->y 3->z 4->magnitude
-let OP = 0;
-let data:Array4<_> = f.read_variable::<f32>(&varname, Some(OP)).unwrap()
-let data:Array4<_> = f.read_vg_variable_as_fg::<f32>(&varname, Some(OP)).unwrap()
-let data:Array4<_> = f.read_fsgrid_variable::<f32>(&varname, Some(OP)).unwrap()
-let data:Array4<_> = f.read_vdf::<f32>(256, "proton")).unwrap();
-```
-
-## 1) MOD_VLSV_READER
-
-  Reads VLSV files and metadata.  
-  Can read ordered fsgrid variables.  
-  Can read vg variables as fg.  
-  Can read dense vdfs and up/down scale them.  
-  Has much smaller memory footprint than analysator.
-    **Keywords:**
-    read_scalar_parameter, read_config, read_version, read_variable_into, get_wid, get_vspace_mesh_bbox, get_spatial_mesh_extents, get_vspace_mesh_extents, get_domain_decomposition, get_max_amr_refinement, get_writting_tasks, get_spatial_mesh_bbox, get_dataset, read_vg_variable_as_fg, read_fsgrid_variable, read_vdf, read_vdf_into, read_variable, read_tag, vg_variable_to_fg <!-- rumdl-disable-line MD013 -->
-
-## 2) MOD_VLSV_TRACING
-
-  Particle tracing routines using fields from Vlasiator.
-    **Keywords:**
-    get_fields_at, new_with_energy_at_Lshell, boris, larmor_radius, borris_adaptive
-
-## 3) MOD_VLSV_EXPORTS
-
-  Creates C and Python interfaces for VLSV_READER.
-    **Keywords:**
-    read_variable_f64, read_variable_f32, read_vdf_f32, read_vdf_f64
