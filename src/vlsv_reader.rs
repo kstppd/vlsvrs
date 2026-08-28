@@ -4850,7 +4850,7 @@ pub mod mod_vlsv_tracing {
             }
         }
 
-        pub fn save(&self, filename: &str) {
+        pub fn save(&self, filename: &str, time: f64) {
             let size = self.size();
             let datasize = std::mem::size_of::<T>();
             let cap = size * std::mem::size_of::<T>() * 6;
@@ -4858,6 +4858,9 @@ pub mod mod_vlsv_tracing {
             let bytes: [u8; std::mem::size_of::<usize>()] = size.to_ne_bytes();
             data.extend_from_slice(&bytes);
             let bytes: [u8; std::mem::size_of::<usize>()] = datasize.to_ne_bytes();
+            data.extend_from_slice(&bytes);
+            //time as f64
+            let bytes: [u8; std::mem::size_of::<f64>()] = time.to_ne_bytes();
             data.extend_from_slice(&bytes);
             //X
             for i in 0..size {
@@ -4892,7 +4895,7 @@ pub mod mod_vlsv_tracing {
             println!(
                 "\tWriting {}/{} bytes to {}",
                 data.len(),
-                cap + 8 + 8,
+                cap + 8 + 8 + 8,
                 filename
             );
             let mut file = std::fs::File::create(filename).expect("Failed to create file");

@@ -9,7 +9,7 @@ plt.style.use('dark_background')
 re=6378137.0
 files=sys.argv[2::]
 for file in tqdm(files):
-    x,y,z,vx,vy,vz=ptrReader.read_ptr2_file(file)
+    _,x,y,z,vx,vy,vz=ptrReader.read_ptr2_file(file)
     x/=re
     y/=re
     z/=re

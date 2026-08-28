@@ -2,17 +2,13 @@
 #![allow(non_snake_case)]
 
 mod vlsv_reader;
-
 use crate::mod_vlsv_tracing::*;
 use crate::vlsv_reader::*;
 use clap::Parser;
-use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::sync::{Arc, Mutex};
-
+use std::process::ExitCode;
 const TIME_EPS: f64 = 1.0e-10;
+const DT_SEED: f64 = 1.0e-4;
 
 #[derive(Parser, Debug)]
 #[command(name = "vlsv_tracer", about = "Forward and backward particle tracer")]
@@ -82,674 +78,320 @@ struct Args {
     buffer_size: f64,
 }
 
-pub fn push_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
-    pop: &mut Arc<Mutex<ParticlePopulation<T>>>,
-    f: &F,
-    time_span: T,
-    actual_time: &mut T,
-) {
-    let n = pop.lock().unwrap().size();
-    let mass = pop.lock().unwrap().mass;
-    let charge = pop.lock().unwrap().charge;
-
-    (0..n).into_par_iter().for_each(|i| {
-        let pr = Arc::clone(pop);
-        let mut particle = {
-            let pop_ref = pr.lock().unwrap();
-            pop_ref.get_temp_particle(i)
-        };
-
-        let mut dt_val = T::from(1e-4).unwrap();
-        boris_adaptive(
-            &mut particle,
-            f,
-            &mut dt_val,
-            *actual_time,
-            *actual_time + time_span,
-            mass,
-            charge,
-        );
-
-        let mut pop_ref = pr.lock().unwrap();
-        pop_ref.take_temp_particle(&particle, i);
-    });
-
-    *actual_time = *actual_time + time_span;
+enum Fields {
+    Dipole(DipoleField<f64>),
+    Static(VlsvStaticField<f64>),
+    Dynamic(VlsvDynamicField<f64>),
 }
 
-pub fn backtrace_population_cpu_adpt<T: PtrTrait, F: Field<T> + Sync>(
-    pop: &mut Arc<Mutex<ParticlePopulation<T>>>,
-    f: &F,
-    time_span: T,
-    actual_time: &mut T,
-) {
-    let n = pop.lock().unwrap().size();
-    let mass = pop.lock().unwrap().mass;
-    let charge = pop.lock().unwrap().charge;
+impl Field<f64> for Fields {
+    fn get_fields_at(&self, t: f64, x: f64, y: f64, z: f64) -> Option<[f64; 6]> {
+        match self {
+            Fields::Dipole(f) => f.get_fields_at(t, x, y, z),
+            Fields::Static(f) => f.get_fields_at(t, x, y, z),
+            Fields::Dynamic(f) => f.get_fields_at(t, x, y, z),
+        }
+    }
 
-    (0..n).into_par_iter().for_each(|i| {
-        let pr = Arc::clone(pop);
-        let mut particle = {
-            let pop_ref = pr.lock().unwrap();
-            pop_ref.get_temp_particle(i)
-        };
-
-        let mut dt_val = T::from(-1e-4).unwrap();
-        boris_backtracing_adaptive(
-            &mut particle,
-            f,
-            &mut dt_val,
-            *actual_time,
-            *actual_time + time_span,
-            mass,
-            charge,
-        );
-
-        let mut pop_ref = pr.lock().unwrap();
-        pop_ref.take_temp_particle(&particle, i);
-    });
-
-    *actual_time = *actual_time + time_span;
+    fn ds(&self) -> f64 {
+        match self {
+            Fields::Dipole(f) => f.ds(),
+            Fields::Static(f) => f.ds(),
+            Fields::Dynamic(f) => f.ds(),
+        }
+    }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-enum SimulationKind {
-    Other,
-    Static,
-    Dynamic,
-}
-
-fn validate_args(args: &Args) -> Result<(), String> {
-    if !args.tmin.is_finite() || !args.tmax.is_finite() || args.tmin >= args.tmax {
+fn validate(args: &Args) -> Result<(), String> {
+    if !(args.tmin.is_finite() && args.tmax.is_finite() && args.tmin < args.tmax) {
         return Err(format!(
-            "Invalid time interval: tmin={} and tmax={}",
+            "invalid time interval: tmin={} and tmax={}",
             args.tmin, args.tmax
         ));
     }
-
-    if !args.tout.is_finite() || args.tout <= 0.0 {
+    if !(args.tout.is_finite() && args.tout > 0.0) {
         return Err(format!(
             "tout must be finite and positive, got {}",
             args.tout
         ));
     }
-
-    if !args.buffer_size.is_finite() || args.buffer_size <= 0.0 {
+    if !(args.buffer_size.is_finite() && args.buffer_size > 0.0) {
         return Err(format!(
             "buffer_size must be finite and positive, got {}",
             args.buffer_size
         ));
     }
-
+    if args.tstart.is_some_and(|t| !t.is_finite()) {
+        return Err("tstart must be finite".to_string());
+    }
     Ok(())
 }
 
-#[inline]
-fn trace_finished(actual_time: f64, args: &Args) -> bool {
+fn periodic(args: &Args) -> [bool; 3] {
+    [args.periodic_x, args.periodic_y, args.periodic_z]
+}
+
+fn sign(args: &Args) -> f64 {
+    if args.backward { -1.0 } else { 1.0 }
+}
+
+fn target_time(origin: f64, step: u64, args: &Args) -> f64 {
+    let t = origin + sign(args) * step as f64 * args.tout.abs();
     if args.backward {
-        actual_time <= args.tmin + TIME_EPS
+        t.max(args.tmin)
     } else {
-        actual_time >= args.tmax - TIME_EPS
+        t.min(args.tmax)
     }
 }
 
-fn scheduled_target(schedule_origin: f64, schedule_step: u64, args: &Args) -> f64 {
-    let offset = schedule_step as f64 * args.tout.abs();
+fn finished(current: f64, args: &Args) -> bool {
     if args.backward {
-        (schedule_origin - offset).max(args.tmin)
+        current <= args.tmin + TIME_EPS
     } else {
-        (schedule_origin + offset).min(args.tmax)
+        current >= args.tmax - TIME_EPS
     }
 }
 
-fn make_dynamic_window(
-    current_time: f64,
-    target_time: f64,
-    tout: f64,
-    buffer_size: f64,
-    backward: bool,
-) -> (f64, f64) {
-    let guard = tout.abs().max(1.0e-9);
-    let step_size = (target_time - current_time).abs();
-    let span = buffer_size.max(step_size + guard);
-
-    if backward {
-        (current_time - span, current_time + guard)
+fn window(current: f64, target: f64, args: &Args) -> (f64, f64) {
+    let guard = args.tout.abs().max(1.0e-9);
+    let span = args.buffer_size.max((target - current).abs() + guard);
+    if args.backward {
+        (current - span, current + guard)
     } else {
-        (current_time - guard, current_time + span)
+        (current - guard, current + span)
     }
 }
 
-#[inline]
-fn range_contains_step(
-    loaded_tmin: f64,
-    loaded_tmax: f64,
-    current_time: f64,
-    target_time: f64,
-) -> bool {
-    let step_tmin = current_time.min(target_time);
-    let step_tmax = current_time.max(target_time);
-
-    loaded_tmin <= step_tmin + TIME_EPS && loaded_tmax + TIME_EPS >= step_tmax
+fn contains(loaded: (f64, f64), current: f64, target: f64) -> bool {
+    loaded.0 <= current.min(target) && loaded.1 >= current.max(target)
 }
 
-fn save_population(
-    pop_arc: &Arc<Mutex<ParticlePopulation<f64>>>,
-    output: &str,
-    out_count: usize,
-    dry: bool,
-) {
-    if !dry {
-        let fname = format!("{}.{:07}.ptr", output, out_count);
-        pop_arc.lock().unwrap().save(&fname);
-    }
-}
-
-fn print_trace_status(
-    pop_arc: &Arc<Mutex<ParticlePopulation<f64>>>,
-    num_particles: usize,
-    actual_time: f64,
-    loaded_range: Option<(f64, f64)>,
-    request_window: Option<(f64, f64)>,
-) {
-    let n_alive = pop_arc.lock().unwrap().count_alive();
-
-    match (loaded_range, request_window) {
-        (Some((loaded_tmin, loaded_tmax)), Some((win_tmin, win_tmax))) => println!(
-            "Tracing {} particles [{} alive] at t= {:.12} s, loaded range [{:.12}, {:.12}], request window [{:.12}, {:.12}]",
-            num_particles, n_alive, actual_time, loaded_tmin, loaded_tmax, win_tmin, win_tmax
-        ),
-        _ => println!(
-            "Tracing {} particles [{} alive] at t= {:.12} s",
-            num_particles, n_alive, actual_time
-        ),
-    }
-}
-
-fn advance_population<F: Field<f64> + Sync>(
-    pop_arc: &mut Arc<Mutex<ParticlePopulation<f64>>>,
+fn advance<F: Field<f64> + Sync>(
+    pop: &mut ParticlePopulation<f64>,
     fields: &F,
-    actual_time: &mut f64,
-    target_time: f64,
-    backward: bool,
+    from: f64,
+    to: f64,
 ) {
-    let dt = target_time - *actual_time;
+    let (mass, charge, backward) = (pop.mass, pop.charge, to < from);
+    let mut particles: Vec<Particle<f64>> =
+        (0..pop.size()).map(|i| pop.get_temp_particle(i)).collect();
 
-    if backward {
-        debug_assert!(dt < 0.0);
-        backtrace_population_cpu_adpt(pop_arc, fields, dt, actual_time);
-    } else {
-        debug_assert!(dt > 0.0);
-        push_population_cpu_adpt(pop_arc, fields, dt, actual_time);
-    }
-
-    *actual_time = target_time;
-}
-
-fn run_fixed_field<F: Field<f64> + Sync>(
-    args: &Args,
-    fields: &F,
-    pop_arc: &mut Arc<Mutex<ParticlePopulation<f64>>>,
-    num_particles: usize,
-    actual_time: &mut f64,
-    out_count: &mut usize,
-) {
-    let schedule_origin = *actual_time;
-    let mut schedule_step: u64 = 1;
-
-    while !trace_finished(*actual_time, args) {
-        let target_time = scheduled_target(schedule_origin, schedule_step, args);
-        let dt = target_time - *actual_time;
-
-        if (args.backward && dt >= 0.0) || (!args.backward && dt <= 0.0) {
-            break;
+    particles.par_iter_mut().for_each(|p| {
+        if !p.alive {
+            return;
         }
+        let mut dt = if backward { -DT_SEED } else { DT_SEED };
+        if backward {
+            boris_backtracing_adaptive(p, fields, &mut dt, from, to, mass, charge);
+        } else {
+            boris_adaptive(p, fields, &mut dt, from, to, mass, charge);
+        }
+    });
 
-        print_trace_status(pop_arc, num_particles, *actual_time, None, None);
-        advance_population(pop_arc, fields, actual_time, target_time, args.backward);
-        save_population(pop_arc, &args.output, *out_count, args.dry);
-
-        *out_count += 1;
-        schedule_step += 1;
+    for (i, p) in particles.iter().enumerate() {
+        pop.take_temp_particle(p, i);
     }
 }
 
-fn run_dynamic_field(
-    args: &Args,
-    vlsv_dir: &str,
-    periodic: [bool; 3],
-    pop_arc: &mut Arc<Mutex<ParticlePopulation<f64>>>,
-    num_particles: usize,
-    actual_time: &mut f64,
-    out_count: &mut usize,
-) {
-    if trace_finished(*actual_time, args) {
+fn save(pop: &ParticlePopulation<f64>, args: &Args, step: u64, time: f64) {
+    if args.dry {
         return;
     }
+    pop.save(&format!("{}.{step:07}.ptr", args.output), time);
+}
 
-    let schedule_origin = *actual_time;
-    let mut schedule_step: u64 = 1;
-    let first_target = scheduled_target(schedule_origin, schedule_step, args);
-
-    let (mut win_tmin, mut win_tmax) = make_dynamic_window(
-        *actual_time,
-        first_target,
-        args.tout,
-        args.buffer_size,
-        args.backward,
-    );
-
-    let mut fields = VlsvDynamicField::<f64>::new_partial(vlsv_dir, periodic, win_tmin, win_tmax);
-    let (mut loaded_tmin, mut loaded_tmax) = fields.temporal_range();
-
-    if !range_contains_step(loaded_tmin, loaded_tmax, *actual_time, first_target) {
-        panic!(
-            "Loaded VLSV range [{loaded_tmin:.12}, {loaded_tmax:.12}] does not bracket the first exact tracer step [{:.12}, {first_target:.12}] requested through [{win_tmin:.12}, {win_tmax:.12}]. Do not shift actual_time to a file timestamp; load bracketing snapshots instead.",
-            *actual_time
+fn trace(
+    args: &Args,
+    mut fields: Option<Fields>,
+    vlsv_dir: Option<&str>,
+    pop: &mut ParticlePopulation<f64>,
+    start: f64,
+) -> Result<f64, String> {
+    let mut current = start;
+    let mut loaded = (f64::INFINITY, f64::NEG_INFINITY);
+    save(pop, args, 0, current);
+    if finished(current, args) {
+        println!(
+            "Start time {current:.12} s is already at the far end of [{:.12}, {:.12}], nothing to trace",
+            args.tmin, args.tmax
         );
     }
 
-    while !trace_finished(*actual_time, args) {
-        let target_time = scheduled_target(schedule_origin, schedule_step, args);
-        let dt = target_time - *actual_time;
-
-        if (args.backward && dt >= 0.0) || (!args.backward && dt <= 0.0) {
+    for step in 1.. {
+        if finished(current, args) {
+            break;
+        }
+        let target = target_time(start, step, args);
+        if (target - current) * sign(args) <= 0.0 {
             break;
         }
 
-        if !range_contains_step(loaded_tmin, loaded_tmax, *actual_time, target_time) {
-            (win_tmin, win_tmax) = make_dynamic_window(
-                *actual_time,
-                target_time,
-                args.tout,
-                args.buffer_size,
-                args.backward,
-            );
-
-            println!(
-                "Reloading dynamic field window -> [{:.12}, {:.12}]",
-                win_tmin, win_tmax
-            );
-
-            fields = VlsvDynamicField::<f64>::new_partial(vlsv_dir, periodic, win_tmin, win_tmax);
-            (loaded_tmin, loaded_tmax) = fields.temporal_range();
-
-            if !range_contains_step(loaded_tmin, loaded_tmax, *actual_time, target_time) {
-                panic!(
-                    "Loaded VLSV range [{loaded_tmin:.12}, {loaded_tmax:.12}] does not bracket exact tracer step [{:.12}, {target_time:.12}] requested through [{win_tmin:.12}, {win_tmax:.12}]. The tracer clock was left unchanged.",
-                    *actual_time
+        if let Some(dir) = vlsv_dir {
+            if !contains(loaded, current, target) {
+                let request = window(current, target, args);
+                println!(
+                    "Loading dynamic field window -> [{:.12}, {:.12}]",
+                    request.0, request.1
                 );
+                drop(fields.take());
+                let loading =
+                    VlsvDynamicField::<f64>::new_partial(dir, periodic(args), request.0, request.1);
+                loaded = loading.temporal_range();
+                fields = Some(Fields::Dynamic(loading));
+
+                if !contains(loaded, current, target) {
+                    return Err(format!(
+                        "loaded VLSV snapshots [{:.12}, {:.12}] do not contain the tracer step [{:.12}, {:.12}] requested through [{:.12}, {:.12}]; the tracer clock is never moved onto a file timestamp, so containing snapshots must exist in {dir}",
+                        loaded.0, loaded.1, current, target, request.0, request.1
+                    ));
+                }
             }
         }
 
-        print_trace_status(
-            pop_arc,
-            num_particles,
-            *actual_time,
-            Some((loaded_tmin, loaded_tmax)),
-            Some((win_tmin, win_tmax)),
+        let range = match vlsv_dir {
+            Some(_) => format!(", loaded range [{:.12}, {:.12}]", loaded.0, loaded.1),
+            None => String::new(),
+        };
+        println!(
+            "Tracing {} particles [{} alive] at t= {current:.12} s{range}",
+            pop.size(),
+            pop.count_alive()
         );
 
-        advance_population(pop_arc, &fields, actual_time, target_time, args.backward);
-        save_population(pop_arc, &args.output, *out_count, args.dry);
-
-        *out_count += 1;
-        schedule_step += 1;
+        advance(
+            pop,
+            fields.as_ref().expect("no field loaded"),
+            current,
+            target,
+        );
+        current = target;
+        save(pop, args, step, current);
     }
+
+    Ok(current)
 }
 
-fn main() -> Result<std::process::ExitCode, std::process::ExitCode> {
-    let args = Args::parse();
+fn load_particles(
+    path: &str,
+    mass: f64,
+    charge: f64,
+) -> Result<(ParticlePopulation<f64>, f64), String> {
+    let text =
+        std::fs::read_to_string(path).map_err(|error| format!("failed to read {path}: {error}"))?;
+    let mut pop = ParticlePopulation::<f64>::new(1024, mass, charge);
+    let mut start: Option<f64> = None;
 
-    if let Err(message) = validate_args(&args) {
-        eprintln!("ERROR: {message}");
-        return Err(std::process::ExitCode::from(2));
+    for (index, line) in text.lines().enumerate() {
+        let (line, lineno) = (line.trim(), index + 1);
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let v: Vec<f64> = line
+            .split(',')
+            .map(|field| field.trim().parse::<f64>())
+            .collect::<Result<_, _>>()
+            .map_err(|error| format!("{path}:{lineno}: {error} in '{line}'"))?;
+
+        if v.len() != 7 || v.iter().any(|value| !value.is_finite()) {
+            return Err(format!(
+                "{path}:{lineno}: expected seven finite values (time,x,y,z,vx,vy,vz), got '{line}'"
+            ));
+        }
+        if (v[0] - *start.get_or_insert(v[0])).abs() > TIME_EPS {
+            return Err(format!(
+                "{path}:{lineno}: start time {:.12} differs from {:.12} used by the earlier rows; all particles must share one start time",
+                v[0],
+                start.unwrap()
+            ));
+        }
+
+        pop.add_particle([v[1], v[2], v[3], v[4], v[5], v[6]], true);
     }
 
-    let periodic = [args.periodic_x, args.periodic_y, args.periodic_z];
+    start
+        .map(|time| (pop, time))
+        .ok_or_else(|| format!("input file {path} contains no particles"))
+}
 
-    let sim_kind = if let Some(path) = &args.vlsv {
-        let meta = std::fs::metadata(path)
-            .unwrap_or_else(|error| panic!("Failed to inspect VLSV path '{path}': {error}"));
-        if meta.file_type().is_file() {
-            SimulationKind::Static
-        } else {
-            SimulationKind::Dynamic
-        }
-    } else {
-        SimulationKind::Other
-    };
+fn run() -> Result<(), String> {
+    let args = Args::parse();
+    validate(&args)?;
 
     let mass = physical_constants::f64::PROTON_MASS;
     let charge = physical_constants::f64::PROTON_CHARGE;
 
-    let default_start = if args.backward { args.tmax } else { args.tmin };
-    let mut actual_time = args.tstart.unwrap_or(default_start);
-    let mut pop = ParticlePopulation::<f64>::new(1024, mass, charge);
-
-    if let Some(filename) = &args.input {
-        let file = File::open(filename).expect("Failed to open input file");
-        let reader = BufReader::new(file);
-
-        for line in reader.lines() {
-            let line = line.unwrap();
-            if line.trim().is_empty() {
-                continue;
+    let (mut pop, start) = match &args.input {
+        Some(path) => {
+            let (pop, time) = load_particles(path, mass, charge)?;
+            if args.tstart.is_some_and(|t| (t - time).abs() > TIME_EPS) {
+                eprintln!("WARNING: --tstart ignored, using start time {time:.12} from {path}");
             }
+            (pop, time)
+        }
+        None => {
+            let pop = ParticlePopulation::<f64>::new_with_energy_at_Lshell(
+                args.num_particles,
+                mass,
+                charge,
+                args.energy_kev,
+                args.lshell * physical_constants::f64::EARTH_RE,
+            );
+            let default_start = if args.backward { args.tmax } else { args.tmin };
+            (pop, args.tstart.unwrap_or(default_start))
+        }
+    };
 
-            let sub: Vec<f64> = line
-                .split(',')
-                .map(|value| value.trim().parse::<f64>().expect("Parse error"))
-                .collect();
+    if pop.size() == 0 {
+        return Err("no particles to trace".to_string());
+    }
+    if !start.is_finite() || start < args.tmin - TIME_EPS || start > args.tmax + TIME_EPS {
+        return Err(format!(
+            "start time {start:.12} is outside [{:.12}, {:.12}]",
+            args.tmin, args.tmax
+        ));
+    }
 
-            if sub.len() != 7 {
-                panic!("Expected seven comma-separated values, got: {line}");
+    let (fields, vlsv_dir) = match &args.vlsv {
+        None => (
+            Some(Fields::Dipole(DipoleField::new(
+                physical_constants::f64::DIPOLE_MOMENT,
+            ))),
+            None,
+        ),
+        Some(path) => {
+            let meta = std::fs::metadata(path)
+                .map_err(|error| format!("failed to inspect VLSV path '{path}': {error}"))?;
+            if meta.is_file() {
+                let fields = VlsvStaticField::new(path, periodic(&args));
+                (Some(Fields::Static(fields)), None)
+            } else {
+                (None, Some(path.as_str()))
             }
-
-            actual_time = sub[0];
-            pop.add_particle([sub[1], sub[2], sub[3], sub[4], sub[5], sub[6]], true);
         }
-    } else {
-        pop = ParticlePopulation::<f64>::new_with_energy_at_Lshell(
-            args.num_particles,
-            mass,
-            charge,
-            args.energy_kev,
-            args.lshell * physical_constants::f64::EARTH_RE,
-        );
-    }
+    };
 
-    if !actual_time.is_finite()
-        || actual_time < args.tmin - TIME_EPS
-        || actual_time > args.tmax + TIME_EPS
-    {
-        eprintln!(
-            "ERROR: start time {:.12} is outside [{:.12}, {:.12}]",
-            actual_time, args.tmin, args.tmax
-        );
-        return Err(std::process::ExitCode::from(2));
-    }
+    let reached = trace(&args, fields, vlsv_dir, &mut pop, start)?;
 
-    let num_particles = pop.size();
-    let mut pop_arc = Arc::new(Mutex::new(pop));
-    let mut out_count: usize = 0;
-
-    match sim_kind {
-        SimulationKind::Dynamic => {
-            let vlsv_dir = args
-                .vlsv
-                .as_deref()
-                .expect("Dynamic simulation requires --vlsv directory");
-            run_dynamic_field(
-                &args,
-                vlsv_dir,
-                periodic,
-                &mut pop_arc,
-                num_particles,
-                &mut actual_time,
-                &mut out_count,
-            );
-        }
-        SimulationKind::Static => {
-            let vlsv_file = args
-                .vlsv
-                .as_deref()
-                .expect("Static simulation requires --vlsv file");
-            let fields = VlsvStaticField::<f64>::new(&String::from(vlsv_file), periodic);
-            run_fixed_field(
-                &args,
-                &fields,
-                &mut pop_arc,
-                num_particles,
-                &mut actual_time,
-                &mut out_count,
-            );
-        }
-        SimulationKind::Other => {
-            let fields = DipoleField::<f64>::new(8e15_f64);
-            run_fixed_field(
-                &args,
-                &fields,
-                &mut pop_arc,
-                num_particles,
-                &mut actual_time,
-                &mut out_count,
-            );
-        }
-    }
-
-    Ok(std::process::ExitCode::SUCCESS)
+    println!(
+        "Done: {}, final time {reached:.12} s, {} of {} particles alive",
+        if args.dry {
+            " (dry run, nothing written)"
+        } else {
+            ""
+        },
+        pop.count_alive(),
+        pop.size()
+    );
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::physical_constants::f64::*;
-    use std::f64::consts::PI;
-
-    const ANGLE_TOL_DEG: f64 = 0.5;
-    const PERCENT_TOLERANCE: f64 = 0.1;
-
-    fn scheduling_args(backward: bool) -> Args {
-        Args {
-            vlsv: None,
-            tstart: Some(1418.0),
-            tmin: 1300.0,
-            tmax: 1419.0,
-            tout: 1.0,
-            backward,
-            periodic_x: false,
-            periodic_y: false,
-            periodic_z: false,
-            input: None,
-            output: "state".to_string(),
-            num_particles: 1,
-            energy_kev: 512.0,
-            lshell: 10.0,
-            dry: true,
-            buffer_size: 10.0,
-        }
-    }
-
-    #[test]
-    fn test_backward_output_schedule_remains_anchored() {
-        let args = scheduling_args(true);
-        let origin = 1418.0;
-
-        assert_eq!(scheduled_target(origin, 1, &args), 1417.0);
-        assert_eq!(scheduled_target(origin, 10, &args), 1408.0);
-        assert_eq!(scheduled_target(origin, 69, &args), 1349.0);
-        assert_eq!(scheduled_target(origin, 70, &args), 1348.0);
-    }
-
-    #[test]
-    fn test_dynamic_window_is_based_on_logical_time() {
-        let (wmin, wmax) = make_dynamic_window(1408.0, 1407.0, 1.0, 10.0, true);
-        assert_eq!(wmin, 1398.0);
-        assert_eq!(wmax, 1409.0);
-    }
-
-    #[test]
-    fn test_jittered_loaded_edge_triggers_reload_without_shortening_step() {
-        assert!(!range_contains_step(
-            1408.001598113233,
-            1418.012292310861,
-            1409.0,
-            1408.0,
-        ));
-
-        assert!(range_contains_step(
-            1398.003607842251,
-            1409.004562765789,
-            1409.0,
-            1408.0,
-        ));
-    }
-
-    fn get_analytical_values(vperp: f64, bmag: f64, q: f64, m: f64) -> (f64, f64, f64) {
-        let omega_c = (q.abs() * bmag) / m;
-        let period = 2.0 * PI / omega_c;
-        let radius = vperp / omega_c;
-        (omega_c, period, radius)
-    }
-
-    #[test]
-    fn test_forward_uniform_field_accuracy() {
-        let b_strength = 50e-9;
-        let mass = PROTON_MASS;
-        let charge = PROTON_CHARGE;
-        let field = UniformField::new(b_strength, 2);
-
-        println!(
-            "\n{:>10} | {:>15} | {:>15} | {:>15}",
-            "Energy(keV)", "Angle Err(deg)", "Energy Err%", "G.Center Err%"
-        );
-        println!("{}", "-".repeat(65));
-
-        for i in [1, 10, 50, 100, 256, 512, 1024] {
-            let energy_kev = i as f64;
-            let ke_j = energy_kev * 1.0e3 * EV_TO_JOULE;
-            let v_mag = (2.0 * ke_j / mass).sqrt();
-
-            let p0 = [EARTH_RE, 0.0, 0.0];
-            let v0 = [0.0, v_mag, 0.0];
-
-            let mut pop = ParticlePopulation::<f64>::new(1, mass, charge);
-            pop.add_particle([p0[0], p0[1], p0[2], v0[0], v0[1], v0[2]], true);
-
-            let (_omega_c, t_gyro, r_larmor) =
-                get_analytical_values(v_mag, b_strength, charge, mass);
-            let mut actual_time: f64 = 0.0;
-            let mut pop_arc = Arc::new(Mutex::new(pop));
-
-            let num_steps = 100;
-            let dt_sub = t_gyro / (num_steps as f64);
-
-            for _ in 0..num_steps {
-                push_population_cpu_adpt(&mut pop_arc, &field, dt_sub, &mut actual_time);
-            }
-
-            let locked = pop_arc.lock().unwrap();
-            let pf = [locked.x[0], locked.y[0], locked.z[0]];
-            let vf = [locked.vx[0], locked.vy[0], locked.vz[0]];
-            let center_x = p0[0] + r_larmor;
-            let center_y = 0.0;
-            let dx_start = p0[0] - center_x;
-            let dy_start = p0[1] - center_y;
-            let phi_start = dy_start.atan2(dx_start).to_degrees();
-            let dx_final = pf[0] - center_x;
-            let dy_final = pf[1] - center_y;
-            let phi_final = dy_final.atan2(dx_final).to_degrees();
-            let mut delta_phi = (phi_final - phi_start).abs();
-            if delta_phi < 180.0 {
-                delta_phi = 360.0 - delta_phi;
-            }
-            let angle_err = (delta_phi - 360.0).abs();
-
-            let v_mag_final = (vf[0].powi(2) + vf[1].powi(2) + vf[2].powi(2)).sqrt();
-            let energy_err_pct = ((v_mag_final - v_mag).abs() / v_mag) * 100.0;
-            let omega_sign = (charge * b_strength) / mass;
-            let calc_center_x = pf[0] + (vf[1] / omega_sign);
-            let center_err_pct = ((calc_center_x - center_x).abs() / r_larmor) * 100.0;
-            println!(
-                "{:>10.1} | {:>15.2e} | {:>15.2e} | {:>15.2e}",
-                energy_kev, angle_err, energy_err_pct, center_err_pct
-            );
-            assert!(
-                angle_err < ANGLE_TOL_DEG,
-                "Angle error too high at {} keV",
-                energy_kev
-            );
-            assert!(
-                energy_err_pct < 1e-10,
-                "Energy conservation failed at {} keV",
-                energy_kev
-            );
-            assert!(
-                center_err_pct < PERCENT_TOLERANCE,
-                "G.Center drift failed at {} keV",
-                energy_kev
-            );
-        }
-    }
-
-    #[test]
-    fn test_backward_uniform_field_accuracy() {
-        let b_strength = 50e-9;
-        let mass = PROTON_MASS;
-        let charge = PROTON_CHARGE;
-        let field = UniformField::new(b_strength, 2);
-
-        println!(
-            "\n{:>10} | {:>15} | {:>15} | {:>15}",
-            "Energy(keV)", "Angle Err(deg)", "Energy Err%", "G.Center Err%"
-        );
-        println!("{}", "-".repeat(65));
-
-        for i in [1, 10, 50, 100, 256, 512, 1024] {
-            let energy_kev = i as f64;
-            let ke_j = energy_kev * 1.0e3 * EV_TO_JOULE;
-            let v_mag = (2.0 * ke_j / mass).sqrt();
-
-            let p0 = [EARTH_RE, 0.0, 0.0];
-            let v0 = [0.0, v_mag, 0.0];
-
-            let mut pop = ParticlePopulation::<f64>::new(1, mass, charge);
-            pop.add_particle([p0[0], p0[1], p0[2], v0[0], v0[1], v0[2]], true);
-
-            let (_omega_c, t_gyro, r_larmor) =
-                get_analytical_values(v_mag, b_strength, charge, mass);
-            let mut actual_time: f64 = 0.0;
-            let mut pop_arc = Arc::new(Mutex::new(pop));
-
-            let num_steps = 100;
-            let dt_sub = t_gyro / (num_steps as f64);
-
-            for _ in 0..num_steps {
-                backtrace_population_cpu_adpt(&mut pop_arc, &field, -dt_sub, &mut actual_time);
-            }
-
-            let locked = pop_arc.lock().unwrap();
-            let pf = [locked.x[0], locked.y[0], locked.z[0]];
-            let vf = [locked.vx[0], locked.vy[0], locked.vz[0]];
-            let center_x = p0[0] + r_larmor;
-            let center_y = 0.0;
-            let dx_start = p0[0] - center_x;
-            let dy_start = p0[1] - center_y;
-            let phi_start = dy_start.atan2(dx_start).to_degrees();
-            let dx_final = pf[0] - center_x;
-            let dy_final = pf[1] - center_y;
-            let phi_final = dy_final.atan2(dx_final).to_degrees();
-            let mut delta_phi = (phi_final - phi_start).abs();
-            if delta_phi < 180.0 {
-                delta_phi = 360.0 - delta_phi;
-            }
-            let angle_err = (delta_phi - 360.0).abs();
-
-            let v_mag_final = (vf[0].powi(2) + vf[1].powi(2) + vf[2].powi(2)).sqrt();
-            let energy_err_pct = ((v_mag_final - v_mag).abs() / v_mag) * 100.0;
-            let omega_sign = (charge * b_strength) / mass;
-            let calc_center_x = pf[0] + (vf[1] / omega_sign);
-            let center_err_pct = ((calc_center_x - center_x).abs() / r_larmor) * 100.0;
-            println!(
-                "{:>10.1} | {:>15.2e} | {:>15.2e} | {:>15.2e}",
-                energy_kev, angle_err, energy_err_pct, center_err_pct
-            );
-            assert!(
-                angle_err < ANGLE_TOL_DEG,
-                "Angle error too high at {} keV",
-                energy_kev
-            );
-            assert!(
-                energy_err_pct < 1e-10,
-                "Energy conservation failed at {} keV",
-                energy_kev
-            );
-            assert!(
-                center_err_pct < PERCENT_TOLERANCE,
-                "G.Center drift failed at {} keV",
-                energy_kev
-            );
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("ERROR: {message}");
+            ExitCode::from(2)
         }
     }
 }

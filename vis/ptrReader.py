@@ -12,10 +12,11 @@ def read_ptr2_file(file):
     datatype=np.float32;
     if (datasize==8):
         datatype=np.float64;
+    time=np.fromfile(f,count=1,dtype=np.float64)
     x=np.fromfile(f,count=size,dtype=datatype)
     y=np.fromfile(f,count=size,dtype=datatype)
     z=np.fromfile(f,count=size,dtype=datatype)
     vx=np.fromfile(f,count=size,dtype=datatype)
     vy=np.fromfile(f,count=size,dtype=datatype)
     vz=np.fromfile(f,count=size,dtype=datatype)
-    return x,y,z,vx,vy,vz
+    return time,x,y,z,vx,vy,vz
