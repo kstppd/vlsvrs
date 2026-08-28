@@ -180,11 +180,15 @@ fn main() {
             if sum <= 0.0 {
                 return Vec::<Option<Particle>>::new();
             }
-            let moments_r = f
-                .read_vg_variable_at::<f64>("moments_r", &[cid])
-                .expect("Could not read moments");
-
-            let vg_v = [moments_r[1], moments_r[2], moments_r[3]];
+            //To get vg_v we try to either read moments_r or proton/vg_v
+            let vg_v = if let Some(moments_r) = f.read_vg_variable_at::<f64>("moments_r", &[cid]) {
+                [moments_r[1], moments_r[2], moments_r[3]]
+            } else {
+                let bulk_v = f
+                    .read_vg_variable_at::<f64>("proton/vg_v", &[cid])
+                    .expect("Could not read bulk velocity from file");
+                [bulk_v[0], bulk_v[1], bulk_v[2]]
+            };
             let dist = WeightedIndex::new(&weights).unwrap();
 
             (0..cli.ppc)
