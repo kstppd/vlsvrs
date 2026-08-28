@@ -19,7 +19,7 @@ This package is written in rust, so you will need [cargo](https://doc.rust-lang.
 Clone the repository:
 
 ```bash
-git clone https://github.com/kstppd/vlsvrs.git
+git clone --recurse-submodules  https://github.com/kstppd/vlsvrs.git 
 cd vlsvrs
 ```
 
