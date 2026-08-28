@@ -1,19 +1,16 @@
-[![Release to TestPyPI](https://github.com/kstppd/vlsvrs/actions/workflows/release.yml/badge.svg?branch=analysator)](https://github.com/kstppd/vlsvrs/actions/workflows/release.yml)
 # VLSVRS
-![Demo](video.gif?v=1.1) 
 
-Motivation:
-I hate all available methods of reading in VLSV files.
-FsGrid is dumped on disk unordered.
-SpatialGrid is hard to read because it has AMR.
-VDFs are hard to read because they are sparse.
-No more! So vlsvrs is a set of tools written mainly for fun but also for
-some projects in Vlasiator (Asterix, Faiser...).
-A very very nice thing here is that we can actually read
-in a VDF into a dense mesh (we can also remap the VDF to a target mesh)
-which is handy for training neural nets. And it can just read all you need
-with a simple call. And it is not python! (**This did not really age well since most 
-people who now use vlsvrs actually only use the python bindings (me included :D )**)
+![Demo](video.gif?v=1.1)
+
+Motivation: I hate all available methods of reading in VLSV files. FsGrid is
+dumped on disk unordered. SpatialGrid is hard to read because it has AMR. VDFs
+are hard to read because they are sparse. No more! So vlsvrs is a set of tools
+written mainly for fun but also for some projects in Vlasiator (Asterix,
+Faiser...). A very very nice thing here is that we can actually read in a VDF
+into a dense mesh (we can also remap the VDF to a target mesh) which is handy
+for training neural nets. And it can just read all you need with a simple call.
+And it is not python! (**This did not really age well since most people who now
+use vlsvrs actually only use the python bindings (me included :D )**)
 
 This package is written in rust, so you will need [cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
 
@@ -24,6 +21,7 @@ To install the C bindings system-wide (headers and `vlsvrs` library):
 ```bash
 ./install.sh
 ```
+
 And now you can use:
 
 ```c
@@ -37,18 +35,25 @@ Grid64 read_var_64(const char *filename, const char *varname, int op);
 Grid32 read_vdf_32(const char *filename, const char *population, size_t cid);
 Grid64 read_vdf_64(const char *filename, const char *population, size_t cid);
 ```
+
 Example usage in C:
+
 ```c
-/* gcc main.c -Wall -Wextra -O3 -lvlsvrs -o bin && ./bin
-Output:
-  VDF with shape [100,100,100] extents[-3000000.000000,-3000000.000000,-3000000.000000,3000000.000000,3000000.000000,3000000.000000] @0x7c41f502f010
-  
-  rho with shape [12,8,1] extents[-5250000.000000,-3500000.000000,-437500.000000,5250000.000000,3500000.000000,437500.000000] @0x62ee34227490
-  
-  velocity with shape [12,8,1] extents[-5250000.000000,-3500000.000000,-437500.000000,5250000.000000,3500000.000000,437500.000000] @0x62ee3420fdf0
-  
+/* gcc main.c -Wall -Wextra -O3 -lvlsvrs -o bin && ./bin Output: VDF with shape
+[100,100,100]
+extents[-3000000.000000,-3000000.000000,-3000000.000000,3000000.000000,3000000.000000,3000000.000000]
+@0x7c41f502f010
+
+rho with shape [12,8,1]
+extents[-5250000.000000,-3500000.000000,-437500.000000,5250000.000000,3500000.000000,437500.000000]
+@0x62ee34227490
+
+velocity with shape [12,8,1]
+extents[-5250000.000000,-3500000.000000,-437500.000000,5250000.000000,3500000.000000,437500.000000]
+@0x62ee3420fdf0
+
   Velocity Block Width = 4
-  
+
   Simulation time = 1.019220
 */
 #include "stdlib.h"
@@ -98,14 +103,14 @@ int main(int argc, char **argv) {
 
 To install:
 
-```{bash}
+```text {bash}
 ./install.sh 
 gfortran vlsvrs.f90 -c -O3
 ```
 
 ### Example
 
-```{fortran}
+```text {fortran}
 PROGRAM main
     USE vlsvrs
     use iso_c_binding, only : c_null_char
@@ -124,16 +129,19 @@ END PROGRAM
 
 Which can be compiled via:
 
-```{bash}
-gfortran vlsvrs.mod main.f90 -Wall -Wextra -Wno-conversion -Wno-c-binding-type -lvlsvrs -o bin
+```text {bash}
+gfortran vlsvrs.mod main.f90 -Wall -Wextra -Wno-conversion -Wno-c-binding-type
+-lvlsvrs -o bin
 ```
 
-
-The module is built into the `./fortran_bindings` folder. Note the signatures: integer kind is 8 for cell id, and strings in fortran vs c are a bit of black magic, requiring null chars and trim. 
+The module is built into the `./fortran_bindings` folder. Note the signatures:
+integer kind is 8 for cell id, and strings in fortran vs c are a bit of black
+magic, requiring null chars and trim.
 
 ## Python Bindings
 
 With pip:
+
 ```bash
 git clone https://github.com/kstppd/vlsvrs
 cd vlsvrs/
@@ -141,21 +149,25 @@ pip install .
 ```
 
 Or:
+
 ```bash
 pip install maturin,numpy
 git clone https://github.com/kstppd/vlsvrs
 cd vlsvrs/
 maturin develop -F with_bindings --release
-#If you are building on Linux and your kernel (check with ```uname -r```) version is 5.1+ then enable io uring 
+#If you are building on Linux and your kernel (check with ```uname -r```) version is 5.1+ then enable io uring  <!-- rumdl-disable-line MD013 -->
 maturin develop -F with_bindings,uring --release
 ```
+
 Now you can do:
+
 ```python
 import vlsvrs
 f=vlsvrs.VlsvFile("bulk.vlsv")
 ```
 
 ## EXAMPLES
+
 ```rust
 let f = VlsvFile::new("bulk.vlsv").unwrap();
 //OP: vec->scalar reduction into first component with  0|1->x(noop) 2->y 3->z 4->magnitude
@@ -167,20 +179,23 @@ let data:Array4<_> = f.read_vdf::<f32>(256, "proton")).unwrap();
 ```
 
 ## 1) MOD_VLSV_READER
+
   Reads VLSV files and metadata.  
   Can read ordered fsgrid variables.  
   Can read vg variables as fg.  
   Can read dense vdfs and up/down scale them.  
   Has much smaller memory footprint than analysator.
     **Keywords:**
-    read_scalar_parameter, read_config, read_version, read_variable_into, get_wid, get_vspace_mesh_bbox, get_spatial_mesh_extents, get_vspace_mesh_extents, get_domain_decomposition, get_max_amr_refinement, get_writting_tasks, get_spatial_mesh_bbox, get_dataset, read_vg_variable_as_fg, read_fsgrid_variable, read_vdf, read_vdf_into, read_variable, read_tag, vg_variable_to_fg
+    read_scalar_parameter, read_config, read_version, read_variable_into, get_wid, get_vspace_mesh_bbox, get_spatial_mesh_extents, get_vspace_mesh_extents, get_domain_decomposition, get_max_amr_refinement, get_writting_tasks, get_spatial_mesh_bbox, get_dataset, read_vg_variable_as_fg, read_fsgrid_variable, read_vdf, read_vdf_into, read_variable, read_tag, vg_variable_to_fg <!-- rumdl-disable-line MD013 -->
 
 ## 2) MOD_VLSV_TRACING
+
   Particle tracing routines using fields from Vlasiator.
     **Keywords:**
     get_fields_at, new_with_energy_at_Lshell, boris, larmor_radius, borris_adaptive
 
 ## 3) MOD_VLSV_EXPORTS
+
   Creates C and Python interfaces for VLSV_READER.
     **Keywords:**
     read_variable_f64, read_variable_f32, read_vdf_f32, read_vdf_f64
