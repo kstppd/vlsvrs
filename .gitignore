@@ -1,7 +1,6 @@
 /target
 *png
 *.ptr
-*lock
 __pycache__/
 assets/
 bin
