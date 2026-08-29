@@ -35,9 +35,6 @@ regex = "1.12.3"
 serde = { version = "1.0", features = ["derive"] }
 serde-xml-rs = "0.6"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-futures = {version="0.3", optional=true}
-tokio-uring = { version = "0.4", optional = true }
 
 [[bin]]
 name="vlsv_dump"
@@ -81,8 +78,7 @@ crate-type = ["staticlib", "cdylib","rlib"]
 
 [features]
 default = []
-with_bindings = ["dep:pyo3","dep:rayon", "dep:numpy","dep:tokio-uring","dep:futures"]
-uring = ["dep:tokio-uring", "dep:futures"]
+with_bindings = ["dep:pyo3","dep:rayon", "dep:numpy"]
 vlsv_view = ["dep:raylib"]
 vlsv_ptr = ["dep:rayon","dep:rand","dep:rand_distr","dep:clap"]
 vlsv_dump = ["dep:clap"]
