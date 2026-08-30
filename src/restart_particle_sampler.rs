@@ -34,10 +34,6 @@ struct Cli {
     #[arg(short, long, default_value = "lucky_particles.txt")]
     output: String,
 
-    /// Initial time
-    #[arg(long, default_value_t = 305.0)]
-    init_time: f32,
-
     /// Particles per cell (PPC)
     #[arg(long, default_value_t = 1024)]
     ppc: usize,
@@ -101,6 +97,9 @@ fn main() {
     let cli = Cli::parse();
     let pop = cli.population;
     let f = VlsvFile::new(&cli.restart_file).unwrap();
+    let time = f
+        .read_scalar_parameter("time")
+        .expect("Could not read time from file");
     let spatial_mesh = f
         .get_spatial_mesh_bbox()
         .unwrap_or_else(|| panic!("Could not read spatial mesh from {}", cli.restart_file));
@@ -168,8 +167,7 @@ fn main() {
             }
 
             let sparse = f.read_sparsity(&pop, cid).unwrap_or_else(|| cli.sparse);
-            let mut vdf = Array4::<f32>::ones((nvx, nvy, nvz, 1));
-            vdf = vdf * sparse;
+            let mut vdf = Array4::<f32>::zeros((nvx, nvy, nvz, 1));
             f.read_vdf_into(
                 cid,
                 &pop,
@@ -185,7 +183,7 @@ fn main() {
                 for j in 0..nvy {
                     for i in 0..nvx {
                         let w = v3[(i, j, k)] as f64;
-                        let w = if w > cli.sparse as f64 { w } else { 0.0 };
+                        let w = if w > sparse as f64 { w } else { 0.0 };
                         weights.push(w);
                         sum += w;
                     }
@@ -197,14 +195,15 @@ fn main() {
                 return Vec::<Option<Particle>>::new();
             }
             //To get vg_v we try to either read moments_r or proton/vg_v
-            let vg_v = if let Some(moments_r) = f.read_vg_variable_at::<f64>("moments_r", &[cid]) {
-                [moments_r[1], moments_r[2], moments_r[3]]
-            } else {
-                let bulk_v = f
-                    .read_vg_variable_at::<f64>("proton/vg_v", &[cid])
-                    .expect("Could not read bulk velocity from file");
-                [bulk_v[0], bulk_v[1], bulk_v[2]]
-            };
+            let vg_v: [f64; 3] =
+                if let Some(moments_r) = f.read_vg_variable_at::<f64>("moments_r", &[cid]) {
+                    [moments_r[1], moments_r[2], moments_r[3]]
+                } else {
+                    let bulk_v = f
+                        .read_vg_variable_at::<f64>("proton/vg_v", &[cid])
+                        .expect("Could not read bulk velocity from file");
+                    [bulk_v[0], bulk_v[1], bulk_v[2]]
+                };
             let dist = WeightedIndex::new(&weights).unwrap();
 
             (0..cli.ppc)
@@ -270,7 +269,7 @@ fn main() {
             writeln!(
                 writer,
                 "{},{},{},{},{},{},{}",
-                cli.init_time, p.x, p.y, p.z, p.vx, p.vy, p.vz
+                time, p.x, p.y, p.z, p.vx, p.vy, p.vz
             )
             .expect("Could not write the particle file!");
         }

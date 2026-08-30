@@ -1528,8 +1528,10 @@ pub mod mod_vlsv_reader {
             let index = if let Some(v) = index_res {
                 v
             } else {
-                println!("Available cids with blocks{:?}", cids_with_blocks);
-                panic!("CID DOES NOT CONTAINS VDF!");
+                if std::env::var("SHOW_CELLIDS_WITH_VDFS").is_ok() {
+                    println!("Available cids with blocks{:?}", cids_with_blocks);
+                }
+                panic!("CellID {cid} does not contain vdf! Run with SHOW_CELLIDS_WITH_VDFS to show CellIDs with VDFs!");
             };
             let read_size = blocks_per_cell[index] as usize;
             let start_block = blocks_per_cell[..index]
@@ -2129,8 +2131,10 @@ pub mod mod_vlsv_reader {
             let index = if let Some(v) = index_res {
                 v
             } else {
-                println!("Available cids with blocks{:?}", cids_with_blocks);
-                panic!("CID DOES NOT CONTAINS VDF!");
+                if std::env::var("SHOW_CELLIDS_WITH_VDFS").is_ok() {
+                    println!("Available cids with blocks{:?}", cids_with_blocks);
+                }
+                panic!("CellID {cid} does not contain vdf! Run with SHOW_CELLIDS_WITH_VDFS to show CellIDs with VDFs!");
             };
             let read_size = blocks_per_cell[index] as usize;
             let start_block = blocks_per_cell[..index]
@@ -2745,7 +2749,7 @@ pub mod mod_vlsv_reader {
                 let idx = cid_map
                     .get(&(c as usize))
                     .copied()
-                    .unwrap_or_else(|| panic!("Failed to find cellid {c} in cidmap"));
+                    ?;
 
                 indices.push(idx);
             }
