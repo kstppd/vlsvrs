@@ -12,6 +12,7 @@ const DT_SEED: f64 = 1.0e-4;
 
 #[derive(Parser, Debug)]
 #[command(name = "vlsv_tracer", about = "Forward and backward particle tracer")]
+#[command(arg_required_else_help = true)]
 struct Args {
     /// VLSV file (static field) or a directory (dynamic field)
     #[arg(short, long)]
