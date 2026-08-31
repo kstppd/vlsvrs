@@ -21,6 +21,7 @@ const BWD: f64 = -1.0_f64;
     name = "vlsv_field_line_tracer",
     about = "Forward and backward field line tracer"
 )]
+#[command(arg_required_else_help = true)]
 struct Args {
     /// VLSV file (static field) or a directory (dynamic field)
     #[arg(short, long)]
