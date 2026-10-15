@@ -194,15 +194,15 @@ fn main() {
                 // return empty vec so does not contribute
                 return Vec::<Option<Particle>>::new();
             }
-            //To get vg_v we try to either read moments_r or proton/vg_v
+            //To get vg_v we try to either read <pop>/vg_v or moments_r (all populations combined)
             let vg_v: [f64; 3] =
-                if let Some(moments_r) = f.read_vg_variable_at::<f64>("moments_r", &[cid]) {
-                    [moments_r[1], moments_r[2], moments_r[3]]
-                } else {
-                    let bulk_v = f
-                        .read_vg_variable_at::<f64>("proton/vg_v", &[cid])
-                        .expect("Could not read bulk velocity from file");
+                if let Some(bulk_v) = f.read_vg_variable_at::<f64>(&format!("{pop}/vg_v"), &[cid]) {
                     [bulk_v[0], bulk_v[1], bulk_v[2]]
+                } else {
+                    let moments_r = f
+                        .read_vg_variable_at::<f64>("moments_r", &[cid])
+                        .expect("Could not read bulk velocity from file");
+                    [moments_r[1], moments_r[2], moments_r[3]]
                 };
             let dist = WeightedIndex::new(&weights).unwrap();
 

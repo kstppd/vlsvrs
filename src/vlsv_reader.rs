@@ -4246,114 +4246,77 @@ pub mod mod_vlsv_tracing {
             }
         }
 
-        fn real2mesh(&self, x: T, y: T, z: T, periodic: [bool; 3]) -> Option<([usize; 3], [T; 3])> {
+        fn real2mesh(
+            &self,
+            x: T,
+            y: T,
+            z: T,
+            periodic: [bool; 3],
+        ) -> Option<([usize; 3], [usize; 3], [T; 3])> {
             let dims = self.e.dim();
             let coords = [x, y, z];
             let grid_dims = [dims.0, dims.1, dims.2];
 
-            let mut indices = [0usize; 3];
+            let mut lo = [0usize; 3];
+            let mut hi = [0usize; 3];
             let mut weights = [T::zero(); 3];
 
             for i in 0..3 {
                 let dim = grid_dims[i];
+                if dim == 1 {
+                    continue;
+                }
                 let size = T::from(dim).unwrap() * self.ds;
                 let mut val = coords[i] - self.extents[i];
 
                 if periodic[i] {
                     val = ((val % size) + size) % size;
-                } else {
-                    if val < T::zero() || val >= size - self.ds {
-                        return None;
-                    }
+                } else if val < T::zero() || val >= size - self.ds {
+                    return None;
                 }
 
                 let norm = val / self.ds;
-                let mut idx = norm.floor().to_usize().unwrap();
+                let idx = norm.floor().to_usize().unwrap();
                 if periodic[i] {
-                    if idx >= dim {
-                        idx = 0;
-                    }
-                    indices[i] = idx;
+                    lo[i] = idx.min(dim - 1);
+                    hi[i] = (lo[i] + 1) % dim;
                 } else {
-                    indices[i] = idx.min(dim - 2);
+                    lo[i] = idx.min(dim - 2);
+                    hi[i] = lo[i] + 1;
                 }
-                weights[i] = norm - T::from(indices[i]).unwrap();
+                weights[i] = norm - T::from(lo[i]).unwrap();
             }
 
-            Some((indices, weights))
+            Some((lo, hi, weights))
         }
 
         // https://en.wikipedia.org/wiki/Trilinear_interpolation#Formulation
-        fn trilerp(&self, grid_point: [usize; 3], weights: [T; 3], field: &Array4<T>) -> [T; 3] {
-            let [x0, y0, z0] = grid_point;
+        fn trilerp(&self, lo: [usize; 3], hi: [usize; 3], weights: [T; 3], field: &Array4<T>) -> [T; 3] {
+            let [x0, y0, z0] = lo;
+            let [x1, y1, z1] = hi;
             let [xd, yd, zd] = weights;
-            let (nx, ny, nz, _) = field.dim();
 
-            fn lerp<T: Float>(a: &ArrayView1<T>, b: &ArrayView1<T>, t: T) -> [T; 3] {
+            fn lerp<T: Float>(a: [T; 3], b: [T; 3], t: T) -> [T; 3] {
                 [
                     a[0] * (T::one() - t) + b[0] * t,
                     a[1] * (T::one() - t) + b[1] * t,
                     a[2] * (T::one() - t) + b[2] * t,
                 ]
             }
+            let at = |i: usize, j: usize, k: usize| -> [T; 3] {
+                let c: ArrayView1<T> = field.slice(s![i, j, k, ..]);
+                [c[0usize], c[1usize], c[2usize]]
+            };
 
-            if nx > 1 && ny > 1 && nz > 1 {
-                let c000 = field.slice(s![x0, y0, z0, ..]);
-                let c001 = field.slice(s![x0, y0, z0 + 1, ..]);
-                let c010 = field.slice(s![x0, y0 + 1, z0, ..]);
-                let c011 = field.slice(s![x0, y0 + 1, z0 + 1, ..]);
-                let c100 = field.slice(s![x0 + 1, y0, z0, ..]);
-                let c101 = field.slice(s![x0 + 1, y0, z0 + 1, ..]);
-                let c110 = field.slice(s![x0 + 1, y0 + 1, z0, ..]);
-                let c111 = field.slice(s![x0 + 1, y0 + 1, z0 + 1, ..]);
+            let c00 = lerp(at(x0, y0, z0), at(x1, y0, z0), xd);
+            let c01 = lerp(at(x0, y0, z1), at(x1, y0, z1), xd);
+            let c10 = lerp(at(x0, y1, z0), at(x1, y1, z0), xd);
+            let c11 = lerp(at(x0, y1, z1), at(x1, y1, z1), xd);
 
-                let c00 = lerp(&c000, &c100, xd);
-                let c01 = lerp(&c001, &c101, xd);
-                let c10 = lerp(&c010, &c110, xd);
-                let c11 = lerp(&c011, &c111, xd);
+            let c0 = lerp(c00, c10, yd);
+            let c1 = lerp(c01, c11, yd);
 
-                let c0 = [
-                    c00[0] * (T::one() - yd) + c10[0] * yd,
-                    c00[1] * (T::one() - yd) + c10[1] * yd,
-                    c00[2] * (T::one() - yd) + c10[2] * yd,
-                ];
-                let c1 = [
-                    c01[0] * (T::one() - yd) + c11[0] * yd,
-                    c01[1] * (T::one() - yd) + c11[1] * yd,
-                    c01[2] * (T::one() - yd) + c11[2] * yd,
-                ];
-
-                return [
-                    c0[0] * (T::one() - zd) + c1[0] * zd,
-                    c0[1] * (T::one() - zd) + c1[1] * zd,
-                    c0[2] * (T::one() - zd) + c1[2] * zd,
-                ];
-            }
-
-            if nx > 1 && ny > 1 && nz == 1 {
-                let c00 = field.slice(s![x0, y0, 0, ..]);
-                let c10 = field.slice(s![x0 + 1, y0, 0, ..]);
-                let c01 = field.slice(s![x0, y0 + 1, 0, ..]);
-                let c11 = field.slice(s![x0 + 1, y0 + 1, 0, ..]);
-
-                let c0 = lerp(&c00, &c10, xd);
-                let c1 = lerp(&c01, &c11, xd);
-
-                return [
-                    c0[0] * (T::one() - yd) + c1[0] * yd,
-                    c0[1] * (T::one() - yd) + c1[1] * yd,
-                    c0[2] * (T::one() - yd) + c1[2] * yd,
-                ];
-            }
-
-            if nx > 1 && ny == 1 && nz == 1 {
-                let c0 = field.slice(s![x0, 0, 0, ..]);
-                let c1 = field.slice(s![x0 + 1, 0, 0, ..]);
-                return lerp(&c0, &c1, xd);
-            }
-
-            let c: ArrayView1<T> = field.slice(s![0, 0, 0, ..]);
-            [c[0usize], c[1usize], c[2usize]]
+            lerp(c0, c1, zd)
         }
     }
 
@@ -4639,9 +4602,9 @@ pub mod mod_vlsv_tracing {
 
     impl<T: PtrTrait> Field<T> for VlsvStaticField<T> {
         fn get_fields_at(&self, _time: T, x: T, y: T, z: T) -> Option<[T; 6]> {
-            let (grid_point, weights) = self.real2mesh(x, y, z, self.periodic)?;
-            let e_field = self.trilerp(grid_point, weights, &self.e);
-            let b_field = self.trilerp(grid_point, weights, &self.b);
+            let (lo, hi, weights) = self.real2mesh(x, y, z, self.periodic)?;
+            let e_field = self.trilerp(lo, hi, weights, &self.e);
+            let b_field = self.trilerp(lo, hi, weights, &self.b);
             Some([
                 b_field[0], b_field[1], b_field[2], e_field[0], e_field[1], e_field[2],
             ])
