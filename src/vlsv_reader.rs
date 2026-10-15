@@ -5933,6 +5933,10 @@ pub mod mod_vlsv_py_exports {
         fn list_variables(&self) -> Vec<String> {
             self.inner.variables().keys().cloned().collect()
         }
+        
+        fn list_parameters(&self) -> Vec<String> {
+            self.inner.parameters().keys().cloned().collect()
+        }
 
         fn read_scalar_parameter(&self, name: &str) -> Option<f64> {
             self.inner.read_scalar_parameter(name)
